@@ -1,11 +1,14 @@
 //! Huffman Compression algorithm
 
 use std::convert::TryInto;
-use std::io::Write;
+use std::fs::OpenOptions;
+use std::io::{BufReader, BufWriter, Read, Write};
 
 use crate::bitstream::BitStreamWriter;
 use crate::huff_decompress::LIMIT;
 use crate::utils::{histogram, Symbols};
+
+const SMALL_CHUNK_SIZE: usize = 20;
 
 fn fast_log2(x: f32) -> f32
 {
@@ -26,7 +29,7 @@ fn fast_log2(x: f32) -> f32
 
     return y - 124.22551499 - 1.498030302 * mx_f - 1.72587999 / (0.3520887068 + mx_f);
 }
-fn limited_kraft(histogram: &mut [Symbols; 256],hist_sum:u32)
+fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
 {
     /*
      * Length limiting things since 2002
@@ -183,7 +186,6 @@ fn generate_codes(symbols: &mut [Symbols; 256], non_zero: usize) -> [u8; LIMIT]
 
     let mut code = 1 << current_size;
 
-
     for sym in symbols[non_zero..].iter_mut()
     {
         // change the current size, but only
@@ -207,9 +209,13 @@ fn generate_codes(symbols: &mut [Symbols; 256], non_zero: usize) -> [u8; LIMIT]
 
 /// Compress a buffer `src` and store it into
 /// buffer `dest`
-pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
+pub fn huff_compress_4x<R: Read, W: Write>(src: &mut BufReader<R>, dest: &mut W)
 {
     const CHUNK_SIZE: usize = 1 << 16;
+
+    let mut src_buf = vec![0; CHUNK_SIZE];
+
+    let mut size = src.read(&mut src_buf).unwrap();
 
     // Initialize stream writers
     let mut stream1 = BitStreamWriter::new();
@@ -228,191 +234,150 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
     let (buf1, remainder) = buf.split_at_mut(START + 200);
     let (buf2, remainder) = remainder.split_at_mut(START + 200);
     let (buf3, buf4) = remainder.split_at_mut(START + 200);
-    // chunk into regular sizes
-    for src in src.chunks(CHUNK_SIZE)
+
+    loop
     {
-        let start = (src.len() + 3) / 4;
-        // 1. Count items in the buffer for histogram statistics
-        let (hist_sum,mut freq_counts) = histogram(src);
-
-        // length limit
-        limited_kraft(&mut freq_counts,hist_sum);
-
-        //find first non-zero element
-        let non_zero = freq_counts
-            .iter()
-            .position(|x| x.code_length != 0)
-            .unwrap_or(0);
-
-        // iterate using code lengths times symbols to determine if it's useful to compress
-        let mut end = 0;
-        for code in &freq_counts[non_zero..]
+        // chunk depending on how much data we read
+        for src_chunk in src_buf[0..size].chunks(size)
         {
-            end += u32::from(code.code_length) * u32::from(code.x);
-        }
-        if end - 4096 > (src.len() as u32 * (u8::BITS))
-        {
-            // encoding didn't work, (codes were assigned a longer distribution of lengths, probably
-            // a uniformly distributed data(limited-kraft doesn't like it )
-            // TODO: Print some stats
-            // emit as it is uncompressed
-        }
-        else
-        {
-            // generate actual codes
-            // codes run from 1..=11 inclusive, e.g if a code length has been given 10 bits, it will be at
-            // position 9.
-            let code_lengths = generate_codes(&mut freq_counts, non_zero);
+            let start = (src_chunk.len() + 3) / 4;
+            // 1. Count items in the buffer for histogram statistics
+            let (hist_sum,mut freq_counts) = histogram(src_chunk);
 
-            let freq_counts_stream = freq_counts.iter().map(|x| x.to_u32()).collect::<Vec<u32>>();
+            // length limit
+            limited_kraft(&mut freq_counts, hist_sum);
 
-            let freq_count_stream: [u32; 256] = freq_counts_stream.try_into().unwrap();
+            //find first non-zero element
+            let non_zero = freq_counts
+                .iter()
+                .position(|x| x.code_length != 0)
+                .unwrap_or(0);
 
-            // Initialize read buffers
-            let (src1, remainder) = src.split_at(start);
-            let (src2, remainder) = remainder.split_at(start);
-            let (src3, src4) = remainder.split_at(start);
-            // deal with symbols until all are aligned
+            // iterate using code lengths times symbols to determine if it's useful to compress
+            let mut end = 0;
 
-            let start1 = src1.len() % 20;
-            let start2 = src2.len() % 20;
-            let start3 = src3.len() % 20;
-            let start4 = src4.len() % 20;
-            // write until all chunks are aligned to a 25 character boundary
-            stream1.write_bits_slow(&src1[0..start1], &freq_count_stream, buf1);
-
-            stream2.write_bits_slow(&src2[0..start2], &freq_count_stream, buf2);
-
-            stream3.write_bits_slow(&src3[0..start3], &freq_count_stream, buf3);
-
-            stream4.write_bits_slow(&src4[0..start4], &freq_count_stream, buf4);
-
-            // now chunks are aligned to 25, no need to check for remainders because they won't be there
-            for (((chunk1, chunk2), chunk3), chunk4) in src1[start1..]
-                .chunks_exact(20)
-                .zip(src2[start2..].chunks_exact(20))
-                .zip(src3[start3..].chunks_exact(20))
-                .zip(src4[start4..].chunks_exact(20))
+            for code in &freq_counts[non_zero..]
             {
-                unsafe {
-                    stream1.write_bits_fast(
-                        chunk1[0..5].try_into().unwrap(),
-                        &freq_count_stream,
-                        buf1,
-                    );
-                    stream2.write_bits_fast(
-                        chunk2[0..5].try_into().unwrap(),
-                        &freq_count_stream,
-                        buf2,
-                    );
-                    stream3.write_bits_fast(
-                        chunk3[0..5].try_into().unwrap(),
-                        &freq_count_stream,
-                        buf3,
-                    );
-                    stream4.write_bits_fast(
-                        chunk4[0..5].try_into().unwrap(),
-                        &freq_count_stream,
-                        buf4,
-                    );
-
-                    stream1.write_bits_fast(
-                        chunk1[5..10].try_into().unwrap(),
-                        &freq_count_stream,
-                        buf1,
-                    );
-                    stream2.write_bits_fast(
-                        chunk2[5..10].try_into().unwrap(),
-                        &freq_count_stream,
-                        buf2,
-                    );
-                    stream3.write_bits_fast(
-                        chunk3[5..10].try_into().unwrap(),
-                        &freq_count_stream,
-                        buf3,
-                    );
-                    stream4.write_bits_fast(
-                        chunk4[5..10].try_into().unwrap(),
-                        &freq_count_stream,
-                        buf4,
-                    );
-
-                    stream1.write_bits_fast(
-                        chunk1[10..15].try_into().unwrap(),
-                        &freq_count_stream,
-                        buf1,
-                    );
-                    stream2.write_bits_fast(
-                        chunk2[10..15].try_into().unwrap(),
-                        &freq_count_stream,
-                        buf2,
-                    );
-                    stream3.write_bits_fast(
-                        chunk3[10..15].try_into().unwrap(),
-                        &freq_count_stream,
-                        buf3,
-                    );
-                    stream4.write_bits_fast(
-                        chunk4[10..15].try_into().unwrap(),
-                        &freq_count_stream,
-                        buf4,
-                    );
-
-                    stream1.write_bits_fast(
-                        chunk1[15..20].try_into().unwrap(),
-                        &freq_count_stream,
-                        buf1,
-                    );
-                    stream2.write_bits_fast(
-                        chunk2[15..20].try_into().unwrap(),
-                        &freq_count_stream,
-                        buf2,
-                    );
-                    stream3.write_bits_fast(
-                        chunk3[15..20].try_into().unwrap(),
-                        &freq_count_stream,
-                        buf3,
-                    );
-                    stream4.write_bits_fast(
-                        chunk4[15..20].try_into().unwrap(),
-                        &freq_count_stream,
-                        buf4,
-                    );
-                }
+                end += u32::from(code.code_length) * u32::from(code.x);
             }
-            // write headers
+            if end - 4096 > (src_chunk.len() as u32 * (u8::BITS))
             {
-                // code lengths
-                dest.write(&code_lengths)
-                    .expect("Could not write code lengths to buffer");
-                // sort again  by codes this time.
-                freq_counts.sort_by(|a, b| a.x.cmp(&b.x));
-                // so now we have a bunch of non-zeroes, we know how many they were since we read them
-                let mut symbols = [0; 256];
-                for (sym, pos) in freq_counts[non_zero..].iter().zip(symbols.iter_mut())
+                // encoding didn't work, (codes were assigned a longer distribution of lengths, probably
+                // a uniformly distributed data(limited-kraft doesn't like it )
+                // TODO: Print some stats
+                // emit as it is uncompressed
+            }
+            else
+            {
+                // generate actual codes
+                // codes run from 1..=11 inclusive, e.g if a code length has been given 10 bits, it will be at
+                // position 9.
+                let code_lengths = generate_codes(&mut freq_counts, non_zero);
+
+                let freq_counts_stream =
+                    freq_counts.iter().map(|x| x.to_u32()).collect::<Vec<u32>>();
+
+                let freq_count_stream: [u32; 256] = freq_counts_stream.try_into().unwrap();
+
+                // Initialize read buffers
+                let (src1, remainder) = src_chunk.split_at(start);
+                let (src2, remainder) = remainder.split_at(start);
+                let (src3, src4) = remainder.split_at(start);
+                // deal with symbols until all are aligned
+
+                let start1 = src1.len() % SMALL_CHUNK_SIZE;
+                let start2 = src2.len() % SMALL_CHUNK_SIZE;
+                let start3 = src3.len() % SMALL_CHUNK_SIZE;
+                let start4 = src4.len() % SMALL_CHUNK_SIZE;
+                // write until all chunks are aligned to a 25 character boundary
+                stream1.write_bits_slow(&src1[0..start1], &freq_count_stream, buf1);
+
+                stream2.write_bits_slow(&src2[0..start2], &freq_count_stream, buf2);
+
+                stream3.write_bits_slow(&src3[0..start3], &freq_count_stream, buf3);
+
+                stream4.write_bits_slow(&src4[0..start4], &freq_count_stream, buf4);
+
+                // now chunks are aligned to 25, no need to check for remainders because they won't be there
+                for (((chunk1, chunk2), chunk3), chunk4) in src1[start1..]
+                    .chunks_exact(SMALL_CHUNK_SIZE)
+                    .zip(src2[start2..].chunks_exact(SMALL_CHUNK_SIZE))
+                    .zip(src3[start3..].chunks_exact(SMALL_CHUNK_SIZE))
+                    .zip(src4[start4..].chunks_exact(SMALL_CHUNK_SIZE))
                 {
-                    *pos = (sym.symbol & 255) as u8;
+                    unsafe {
+                        macro_rules! write_bits {
+                            ($start:tt,$end:tt) => {
+                                stream1.write_bits_fast(
+                            chunk1[$start..$end].try_into().unwrap(),
+                            &freq_count_stream,
+                            buf1,
+                        );
+                        stream2.write_bits_fast(
+                            chunk2[$start..$end].try_into().unwrap(),
+                            &freq_count_stream,
+                            buf2,
+                        );
+                        stream3.write_bits_fast(
+                            chunk3[$start..$end].try_into().unwrap(),
+                            &freq_count_stream,
+                            buf3,
+                        );
+                        stream4.write_bits_fast(
+                            chunk4[$start..$end].try_into().unwrap(),
+                            &freq_count_stream,
+                            buf4,
+                        );
+                            };
+                        }
+
+                        write_bits!(0,5);
+                        write_bits!(5,10);
+                        write_bits!(10,15);
+                        write_bits!(15,20);
+                    }
                 }
-                dest.write(&symbols[0..(256 - non_zero)])
-                    .expect("Could not write symbols to destination buffer");
+                // write headers
+                {
+                    // code lengths
+                    dest.write(&code_lengths)
+                        .expect("Could not write code lengths to buffer");
+                    // sort again  by codes this time.
+                    freq_counts.sort_by(|a, b| a.x.cmp(&b.x));
+                    // so now we have a bunch of non-zeroes, we know how many they were since we read them
+                    let mut symbols = [0; 256];
+                    for (sym, pos) in freq_counts[non_zero..].iter().zip(symbols.iter_mut())
+                    {
+                        *pos = (sym.symbol & 255) as u8;
+                    }
+                    dest.write(&symbols[0..(256 - non_zero)])
+                        .expect("Could not write symbols to destination buffer");
+                }
+                // write data
+                dest.write(&buf1[0..stream1.get_position()])
+                    .expect("Failed to write to destination buffer");
+
+                dest.write(&buf2[0..stream2.get_position()])
+                    .expect("Failed to write to destination buffer");
+
+                dest.write(&buf3[0..stream3.get_position()])
+                    .expect("Failed to write to destination buffer");
+
+                dest.write(&buf4[0..stream4.get_position()])
+                    .expect("Failed to write to destination buffer");
+
+                stream1.reset();
+                stream2.reset();
+                stream3.reset();
+                stream4.reset();
             }
-            // write data
-            dest.write(&buf1[0..stream1.get_position()])
-                .expect("Failed to write to destination buffer");
+        }
 
-            dest.write(&buf2[0..stream2.get_position()])
-                .expect("Failed to write to destination buffer");
+        size = src.read(&mut src_buf).unwrap();
 
-            dest.write(&buf3[0..stream3.get_position()])
-                .expect("Failed to write to destination buffer");
-
-            dest.write(&buf4[0..stream4.get_position()])
-                .expect("Failed to write to destination buffer");
-
-            stream1.reset();
-            stream2.reset();
-            stream3.reset();
-            stream4.reset();
+        if size == 0
+        {
+            break;
         }
     }
 }
@@ -420,14 +385,17 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
 #[test]
 fn huff_compress()
 {
-    let mut random = vec![0_u8; 1 << 20];
-    use rand::{thread_rng, Rng};
-    thread_rng().fill(&mut random[..]);
-    random.sort_unstable();
-    let mut dest = vec![];
-    //random.sort_unstable();
-    huff_compress_4x(&random[..], &mut dest);
-    println!("{:?}",random.len() as f32/dest.len() as f32);
+    let fs = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open("/Users/calebe/CLionProjects/zcif/tests")
+        .unwrap();
+    let mut fs = BufWriter::with_capacity(1 << 24, fs);
 
-    println!("{:?}, {:?}",&dest[0..11],&dest[11..11+(&dest[0..11]).iter().map(|a| usize::from(*a)).sum::<usize>()])
+    let  fd = OpenOptions::new().read(true).open("/Users/calebe/git/FiniteStateEntropy/programs/enwiki").unwrap();
+    let mut fd = BufReader::new(fd);
+
+    huff_compress_4x(&mut fd, &mut fs);
+    println!("{:?}", fs.get_ref().metadata().unwrap().len() as f64 / fd.get_ref().metadata().unwrap().len() as f64);
 }

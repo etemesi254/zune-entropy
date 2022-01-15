@@ -1,13 +1,11 @@
-use std::fs::OpenOptions;
-use std::io::{BufWriter, Seek, SeekFrom};
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, BufWriter, Seek, SeekFrom};
 use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use zcif::huff_compress_4x;
 fn criterion_benchmark(c: &mut Criterion)
 {
-    // 1 mb
-    let mut random = vec![0_u8; 1 << 24];
     let fs = OpenOptions::new()
         .create(true)
         .write(true)
@@ -15,12 +13,13 @@ fn criterion_benchmark(c: &mut Criterion)
         .open("/Users/calebe/CLionProjects/zcif/tests")
         .unwrap();
     let mut fs = BufWriter::with_capacity(1 << 24, fs);
-    use rand::{thread_rng, Rng};
-    thread_rng().fill(&mut random[..]);
-    random.sort_unstable();
+
+    let mut fd = OpenOptions::new().read(true).open("/Users/calebe/git/FiniteStateEntropy/programs/enwiki").unwrap();
+    let mut fd = BufReader::new(fd);
+
 
     c.bench_function("Huff Compress 4X", |b| {
-        b.iter(|| black_box(huff_compress_4x(&random, &mut fs)));
+        b.iter(|| black_box(huff_compress_4x(&mut fd, &mut fs)));
         // set length to be zero on all iterations
         fs.get_mut().set_len(0);
         fs.seek(SeekFrom::Start(0));

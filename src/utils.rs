@@ -82,7 +82,7 @@ pub fn histogram(data: &[u8]) -> (u32,[Symbols; 256])
         start1[usize::from(*i)] += 1;
     }
     let mut i = 0;
-    let mut sum=0;
+    let mut sum = 0;
     // add them together
     for ((((a, b), c), d), e) in val
         .iter_mut()
@@ -92,8 +92,7 @@ pub fn histogram(data: &[u8]) -> (u32,[Symbols; 256])
         .zip(start4.iter())
     {
         a.x += b + c + d + e;
-        sum+=a.x;
-
+        sum += a.x;
         a.symbol = i;
         i += 1;
     }

@@ -1,3 +1,4 @@
+#![feature(stdsimd)]
 //! Small function utilities for compression and decompression
 
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -81,6 +82,50 @@ fn histogram_4x_u64(data: &[u8])
         *a += b + c + d;
     }
 }
+#[cfg(feature = "arm")]
+#[cfg(target_arch = "aarch64")]
+pub fn histogram_simd(data: &[u8])
+{
+    use std::arch::aarch64::*;
+    // contains our count values
+
+    let mut counts = [0_u32; 256 * 4];
+
+    let (start1, counts) = counts.split_at_mut(256);
+
+    let (start2, counts) = counts.split_at_mut(256);
+
+    let (start3, start4) = counts.split_at_mut(256);
+
+    let chunks = data.chunks_exact(32);
+    let remainder = chunks.remainder();
+    unsafe {
+        for chunk in chunks
+        {
+            let v = vld1_u8_x4(chunk.as_ptr());
+            macro_rules! hist_lane {
+                ($start:tt,$v:tt) => {
+                    $start[vget_lane_u8::<0>($v) as usize] += 1;
+                    $start[vget_lane_u8::<1>($v) as usize] += 1;
+                    $start[vget_lane_u8::<2>($v) as usize] += 1;
+                    $start[vget_lane_u8::<3>($v) as usize] += 1;
+                    $start[vget_lane_u8::<4>($v) as usize] += 1;
+                    $start[vget_lane_u8::<5>($v) as usize] += 1;
+                    $start[vget_lane_u8::<6>($v) as usize] += 1;
+                    $start[vget_lane_u8::<7>($v) as usize] += 1;
+                };
+            }
+            hist_lane!(start1, (v.0));
+            hist_lane!(start2, (v.1));
+            hist_lane!(start3, (v.2));
+            hist_lane!(start4, (v.3));
+        }
+    }
+    for i in remainder
+    {
+        start1[usize::from(*i)] += 1;
+    }
+}
 fn criterion_benchmark(c: &mut Criterion)
 {
     let mut rng = rand::thread_rng();
@@ -90,7 +135,7 @@ fn criterion_benchmark(c: &mut Criterion)
 
     c.bench_function("histogram 4x", |b| b.iter(|| histogram_4x(&t)));
 
-    c.bench_function("histogram 4x u64", |b| b.iter(|| histogram_4x_u64(&t)));
+    c.bench_function("histogram 4x simd", |b| b.iter(|| histogram_simd(&t)));
 }
 
 criterion_group!(benches, criterion_benchmark);

@@ -2,7 +2,6 @@
 //!
 //! This module provides an interface to read and write bits (and bytes)
 
-
 #[derive(Eq, PartialEq, Clone, Copy)]
 pub enum Flags
 {
@@ -142,7 +141,7 @@ impl BitStreamWriter
         }
     }
     pub unsafe fn write_bits_fast(
-        &mut self, symbols: [u8; 5], entry: &[u32; 256], out_buf: &mut [u8],
+        &mut self, symbols: &[u8; 5], entry: &[u32; 256], out_buf: &mut [u8],
     )
     {
         /*
