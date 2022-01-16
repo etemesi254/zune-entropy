@@ -2,6 +2,7 @@
 //!
 //! This module provides an interface to read and write bits (and bytes)
 
+
 #[derive(Eq, PartialEq, Clone, Copy)]
 pub enum Flags
 {
@@ -110,10 +111,11 @@ impl BitStreamWriter
     {
         BitStreamWriter {
             buf: 0,
-            empty_bits: 64,
+            empty_bits: 0,
             position: 0,
         }
     }
+    /// Deal with initial bits which can't be handled by the fast path.
     pub fn write_bits_slow(&mut self, symbols: &[u8], entries: &[u32; 256], out_buf: &mut [u8])
     {
         let mut flush_bit = 0;
@@ -121,9 +123,10 @@ impl BitStreamWriter
         {
             let entry = entries[usize::from(*symbol)];
 
-            self.empty_bits -= (entry & 0xFF) as u8;
             // add to the top bits
             self.buf |= u64::from(entry >> 8) << self.empty_bits;
+            
+            self.empty_bits += (entry & 0xFF) as u8;
 
             flush_bit += 1;
 
@@ -140,24 +143,24 @@ impl BitStreamWriter
             self.flush_fast(out_buf);
         }
     }
+    #[inline(always)]
     pub unsafe fn write_bits_fast(
         &mut self, symbols: &[u8; 5], entry: &[u32; 256], out_buf: &mut [u8],
     )
     {
         /*
         *The limit is 11 bits per symbol, therefore we can go
-        * to symbols per  encode (55)
+        * to 5 symbols per encode (55).
         *
         * The symbols are read in little endian order, symbol[0] is stored
         * at bits 24..32(for variable large_entry). symbol[4] is stored at bit position(0..8)
         *
         * Loads are optimized to one  large variable , (single load is slower).
-
-
+        *
+        *
+        * The fifth symbol is the weird one since it doesn't fit into a u32 hence 
+        * it is handles in the last bit
         */
-
-        // bits come in top order from MSB to LSB.
-        // so symbol[0] is the first one to add
 
         let large_entry = u32::from_le_bytes(symbols[0..4].try_into().unwrap());
 
@@ -165,9 +168,11 @@ impl BitStreamWriter
             ($pos:tt) => {
                 let entry = entry[((large_entry >> ($pos)) & 255) as usize];
 
-                self.empty_bits -= (entry & 0xFF) as u8;
                 // add to the top bits
                 self.buf |= (u64::from(entry >> 8) << self.empty_bits);
+
+                 self.empty_bits += (entry & 0xFF) as u8;
+
             };
         }
 
@@ -181,9 +186,11 @@ impl BitStreamWriter
         // the black sheep (can't fit into u32)
         let entry = entry[usize::from(symbols[4])];
 
-        self.empty_bits -= (entry & 0xFF) as u8;
         // add to the top bits
         self.buf |= u64::from(entry >> 8) << self.empty_bits;
+
+        self.empty_bits += (entry & 0xFF) as u8;
+
         // flush to output buffer
         self.flush_fast(out_buf);
     }
@@ -193,24 +200,24 @@ impl BitStreamWriter
         // bits are in the top buffer arranged in the top buffer following each other
         // the first bit is in the MSB.
         // take the big endian representation
-        let buf = self.buf.to_be_bytes();
+        let buf = self.buf.to_le_bytes();
         // write 8 bytes
         out_buf
             .as_mut_ptr()
             .add(self.position)
             .copy_from(buf.as_ptr(), 8);
         // but update position to point to the full number of symbols we read
-        let bytes_written = i32::from(64 - self.empty_bits) & (-8);
+        let bytes_written = self.empty_bits & 56;
         // remove those bits we read.
-        self.buf <<= bytes_written;
+        self.buf >>= bytes_written;
         // increment position
         self.position += (bytes_written >> 3) as usize;
 
-        self.empty_bits = 64 - ((64 - self.empty_bits) & 7);
+        self.empty_bits &= 7;
     }
     pub fn reset(&mut self)
     {
-        self.empty_bits = 64;
+        self.empty_bits = 0;
         self.buf = 0;
         self.position = 0;
     }
