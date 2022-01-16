@@ -25,7 +25,7 @@ impl Symbols
 }
 
 /// Calculate the occurrences of a byte in a distribution
-pub fn histogram(data: &[u8]) -> (u32,[Symbols; 256])
+pub fn histogram(data: &[u8]) -> (u32, [Symbols; 256])
 {
     /*
      * The reason for splitting 4x is largely represented by
@@ -59,7 +59,9 @@ pub fn histogram(data: &[u8]) -> (u32,[Symbols; 256])
         // Probably attributed to powturbo and Nathan Kurtz but it's also in
         // FSE/lib/hist.c
 
-        let tmp1 = u64::from_be_bytes(i[0..8].try_into().unwrap());
+        let tmp1 = u64::from_le_bytes(i[0..8].try_into().unwrap());
+
+        //*hasher = hash(*hasher);
 
         start1[((tmp1 >> 56) & 255) as usize] += 1;
 
@@ -97,5 +99,5 @@ pub fn histogram(data: &[u8]) -> (u32,[Symbols; 256])
         i += 1;
     }
 
-    return (sum,val);
+    return (sum, val);
 }
