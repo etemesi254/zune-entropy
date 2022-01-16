@@ -1,9 +1,7 @@
 //! Huffman Compression algorithm
 
 use std::convert::TryInto;
-use std::fs::OpenOptions;
 use std::io::{BufReader, BufWriter, Read, Write};
-
 use crate::bitstream::BitStreamWriter;
 use crate::huff_decompress::LIMIT;
 use crate::utils::{histogram, Symbols};
@@ -209,9 +207,12 @@ fn generate_codes(symbols: &mut [Symbols; 256], non_zero: usize) -> [u8; LIMIT]
 
 /// Compress a buffer `src` and store it into
 /// buffer `dest`
-pub fn huff_compress_4x<R: Read, W: Write>(src: &mut BufReader<R>, dest: &mut W)
+pub fn huff_compress_4x<R: Read, W: Write>(src: &mut BufReader<R>, dest: &mut BufWriter<W>)
 {
-    const CHUNK_SIZE: usize = 1 << 16;
+    /// This depends on the CPU cache size.
+    /// For Mac os, we have it being 132 kb , since L1 is 192 kb 
+    /// increasing that will cause L1 cache thrashing. 
+    const CHUNK_SIZE: usize = 1 << 17;
 
     let mut src_buf = vec![0; CHUNK_SIZE];
 
@@ -222,10 +223,11 @@ pub fn huff_compress_4x<R: Read, W: Write>(src: &mut BufReader<R>, dest: &mut W)
     let mut stream2 = BitStreamWriter::new();
     let mut stream3 = BitStreamWriter::new();
     let mut stream4 = BitStreamWriter::new();
+    let mut stream5 = BitStreamWriter::new();
 
-    let mut buf = vec![0; CHUNK_SIZE + 800];
+    let mut buf = vec![0; CHUNK_SIZE + 1000];
 
-    const START: usize = (CHUNK_SIZE + 3) / 4;
+    const START: usize = (CHUNK_SIZE + 4) / 5;
 
     // Initialize destination buffers.
     // out buffer should be in buffer / 4 + 200 bytes extra for padding
@@ -233,16 +235,17 @@ pub fn huff_compress_4x<R: Read, W: Write>(src: &mut BufReader<R>, dest: &mut W)
 
     let (buf1, remainder) = buf.split_at_mut(START + 200);
     let (buf2, remainder) = remainder.split_at_mut(START + 200);
-    let (buf3, buf4) = remainder.split_at_mut(START + 200);
+    let (buf3, remainder) = remainder.split_at_mut(START + 200);
+    let (buf4,buf5) = remainder.split_at_mut(START + 200);
 
     loop
     {
         // chunk depending on how much data we read
         for src_chunk in src_buf[0..size].chunks(size)
         {
-            let start = (src_chunk.len() + 3) / 4;
+            let start = (src_chunk.len() + 3) / 5;
             // 1. Count items in the buffer for histogram statistics
-            let (hist_sum,mut freq_counts) = histogram(src_chunk);
+            let (hist_sum, mut freq_counts) = histogram(src_chunk);
 
             // length limit
             limited_kraft(&mut freq_counts, hist_sum);
@@ -282,13 +285,15 @@ pub fn huff_compress_4x<R: Read, W: Write>(src: &mut BufReader<R>, dest: &mut W)
                 // Initialize read buffers
                 let (src1, remainder) = src_chunk.split_at(start);
                 let (src2, remainder) = remainder.split_at(start);
-                let (src3, src4) = remainder.split_at(start);
-                // deal with symbols until all are aligned
-
+                let (src3, remainder) = remainder.split_at(start);
+                let (src4,src5) = remainder.split_at(start);
+                // deal with symbols until all are aligned.
                 let start1 = src1.len() % SMALL_CHUNK_SIZE;
                 let start2 = src2.len() % SMALL_CHUNK_SIZE;
                 let start3 = src3.len() % SMALL_CHUNK_SIZE;
                 let start4 = src4.len() % SMALL_CHUNK_SIZE;
+                let start5 = src5.len() % SMALL_CHUNK_SIZE;
+
                 // write until all chunks are aligned to a 25 character boundary
                 stream1.write_bits_slow(&src1[0..start1], &freq_count_stream, buf1);
 
@@ -298,43 +303,52 @@ pub fn huff_compress_4x<R: Read, W: Write>(src: &mut BufReader<R>, dest: &mut W)
 
                 stream4.write_bits_slow(&src4[0..start4], &freq_count_stream, buf4);
 
+                stream5.write_bits_slow(&src5[0..start5], &freq_count_stream, buf5);
+
                 // now chunks are aligned to 25, no need to check for remainders because they won't be there
-                for (((chunk1, chunk2), chunk3), chunk4) in src1[start1..]
+                for ((((chunk1, chunk2), chunk3), chunk4),chunk5) in src1[start1..]
                     .chunks_exact(SMALL_CHUNK_SIZE)
                     .zip(src2[start2..].chunks_exact(SMALL_CHUNK_SIZE))
                     .zip(src3[start3..].chunks_exact(SMALL_CHUNK_SIZE))
                     .zip(src4[start4..].chunks_exact(SMALL_CHUNK_SIZE))
+                    .zip(src5[start5..].chunks_exact(SMALL_CHUNK_SIZE))
                 {
                     unsafe {
                         macro_rules! write_bits {
                             ($start:tt,$end:tt) => {
                                 stream1.write_bits_fast(
-                            chunk1[$start..$end].try_into().unwrap(),
-                            &freq_count_stream,
-                            buf1,
-                        );
-                        stream2.write_bits_fast(
-                            chunk2[$start..$end].try_into().unwrap(),
-                            &freq_count_stream,
-                            buf2,
-                        );
-                        stream3.write_bits_fast(
-                            chunk3[$start..$end].try_into().unwrap(),
-                            &freq_count_stream,
-                            buf3,
-                        );
-                        stream4.write_bits_fast(
-                            chunk4[$start..$end].try_into().unwrap(),
-                            &freq_count_stream,
-                            buf4,
-                        );
+                                    chunk1[$start..$end].try_into().unwrap(),
+                                    &freq_count_stream,
+                                    buf1,
+                                );
+                                stream2.write_bits_fast(
+                                    chunk2[$start..$end].try_into().unwrap(),
+                                    &freq_count_stream,
+                                    buf2,
+                                );
+                                stream3.write_bits_fast(
+                                    chunk3[$start..$end].try_into().unwrap(),
+                                    &freq_count_stream,
+                                    buf3,
+                                );
+                                stream4.write_bits_fast(
+                                    chunk4[$start..$end].try_into().unwrap(),
+                                    &freq_count_stream,
+                                    buf4,
+                                );
+                                stream5.write_bits_fast(
+                                    chunk5[$start..$end].try_into().unwrap(),
+                                    &freq_count_stream,
+                                    buf5,
+                                );
                             };
                         }
 
-                        write_bits!(0,5);
-                        write_bits!(5,10);
-                        write_bits!(10,15);
-                        write_bits!(15,20);
+                        write_bits!(0, 5);
+                        write_bits!(5, 10);
+                        write_bits!(10, 15);
+                        write_bits!(15, 20);
+                        
                     }
                 }
                 // write headers
@@ -366,10 +380,15 @@ pub fn huff_compress_4x<R: Read, W: Write>(src: &mut BufReader<R>, dest: &mut W)
                 dest.write(&buf4[0..stream4.get_position()])
                     .expect("Failed to write to destination buffer");
 
+
+                dest.write(&buf5[0..stream5.get_position()])
+                    .expect("Failed to write to destination buffer");
+                
                 stream1.reset();
                 stream2.reset();
                 stream3.reset();
                 stream4.reset();
+                stream5.reset();
             }
         }
 
@@ -385,6 +404,9 @@ pub fn huff_compress_4x<R: Read, W: Write>(src: &mut BufReader<R>, dest: &mut W)
 #[test]
 fn huff_compress()
 {
+
+    use std::fs::OpenOptions;
+    
     let fs = OpenOptions::new()
         .create(true)
         .write(true)
@@ -393,9 +415,16 @@ fn huff_compress()
         .unwrap();
     let mut fs = BufWriter::with_capacity(1 << 24, fs);
 
-    let  fd = OpenOptions::new().read(true).open("/Users/calebe/git/FiniteStateEntropy/programs/enwiki").unwrap();
+    let fd = OpenOptions::new()
+        .read(true)
+        .open("/Users/calebe/git/FiniteStateEntropy/programs/enwiki")
+        .unwrap();
     let mut fd = BufReader::new(fd);
 
     huff_compress_4x(&mut fd, &mut fs);
-    println!("{:?}", fs.get_ref().metadata().unwrap().len() as f64 / fd.get_ref().metadata().unwrap().len() as f64);
+    println!(
+        "{:?}",
+        fs.get_ref().metadata().unwrap().len() as f64
+            / fd.get_ref().metadata().unwrap().len() as f64
+    );
 }
