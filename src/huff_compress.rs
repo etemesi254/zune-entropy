@@ -1,7 +1,7 @@
 //! Huffman Compression algorithm
 
 use std::convert::TryInto;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{Read, Write, Seek, SeekFrom};
 use crate::bitstream::BitStreamWriter;
 use crate::huff_decompress::LIMIT;
 use crate::utils::{histogram, Symbols};
@@ -115,6 +115,7 @@ fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
                 *code_length += 1;
 
                 spent -= ONE >> (*code_length);
+
                 histogram[i].code_length = (*code_length) as u16;
 
                 if spent <= ONE
@@ -180,44 +181,96 @@ fn generate_codes(symbols: &mut [Symbols; 256], non_zero: usize) -> [u8; LIMIT]
 
     let mut code_lengths = [0_u8; LIMIT];
 
-    let mut current_size = symbols[non_zero].code_length;
+    let mut current_size = symbols[0].code_length;
 
-    let mut code = 1 << current_size;
+    let mut code = 0;
 
     for sym in symbols[non_zero..].iter_mut()
     {
+        let size = sym.code_length;
         // change the current size, but only
         // when it's different from the previous code size.
-        let ls = 1 & u8::from(current_size != sym.code_length);
-
-        current_size = sym.code_length;
+            
+        let size_diff = size - current_size;
+       
+        code <<= size_diff as usize;
+       
+        current_size = size;
+    
 
         code_lengths[usize::from(sym.code_length) - 1] += 1;
-
-        code <<= ls;
 
         sym.x = code;
 
         code += 1;
+
     }
 
-    symbols.sort_unstable_by(|a, b| a.symbol.cmp(&b.symbol));
+    
+    let mut sym_new = [Symbols::default();256];
+    // put symbols in the right position.
+    for sym in symbols.iter(){
+        sym_new[(sym.symbol & 255) as usize] = *sym; 
+    }
+    *symbols = sym_new;
+
     return code_lengths;
 }
 
 /// Compress a buffer `src` and store it into
 /// buffer `dest`
-pub fn huff_compress_4x<R: Read, W: Write>(src: &mut BufReader<R>, dest: &mut BufWriter<W>)
+pub fn huff_compress_4x<R:Read+Seek, W: Write>(src: &mut R, dest: &mut W)
 {
-    /// This depends on the CPU cache size.
-    /// For Mac os, we have it being 132 kb , since L1 is 192 kb 
-    /// increasing that will cause L1 cache thrashing. 
+    /*
+    * Main code for compression.
+    *
+    * The code here is quite dense but it does what you expect for Huffman
+    * 
+    * 1. Histogramming
+    * 2. length limit
+    * 3. Generate actual codes
+    * 4. Compress
+    *
+    * From histogramming, we can deduce compression ratio
+    * (bits for symbol * occurence) from which we may
+    * decide if the block is worth compressing. If the compression ratio is small,
+    * we won't compress and we emit an uncompressed block.
+    *
+    * If the ratio is high, we continue compressing.
+    *
+    * We then go and do length limiting, with 11 symbols max.
+    * The choice for 11 is simple, it's a large number, and we can go for 5 codes without
+    * flushing to the output buffer,(11*5 = 55 bits) hence less instructions per symbol output.
+    *
+    * After that we generate actual codes from the code lengths and then we move into the
+    * hot loops.
+    * 
+    * For the encoding loops, we first encode the initial symbols until 
+    * the src buffer is divisible by 25. When we reach this we can enter a steady
+    * state of 4 unrolls each consuming 5 bytes per iteration(unrolling it further doesn't help)
+    * which are encoded by the bit-stream, and after this loop ends, we simply are done.
+    * we write headers, and write our compressed buffer and call it a day.
+    *
+    *  
+    */
+
+    // This depends on the CPU cache size.
+    // For mac os, we have it being 132 kb , since L1 is 192 kb 
+    // increasing that will cause L1 cache thrashing. 
+
+    // TODO:Pragammatically get L1 cache size?
     const CHUNK_SIZE: usize = 1 << 17;
 
     let mut src_buf = vec![0; CHUNK_SIZE];
+    // Some weird bug would arise where the reader would
+    // point to the end of the file when reading from in memory buffers.
+    // I'm too lazy to try and understand it , so here is my workaround
+    // Just seek it to be zero.
+    src.seek(SeekFrom::Start(0)).unwrap();
 
+    // size is how many bytes were actually read.
     let mut size = src.read(&mut src_buf).unwrap();
-
+    
     // Initialize stream writers
     let mut stream1 = BitStreamWriter::new();
     let mut stream2 = BitStreamWriter::new();
@@ -404,8 +457,8 @@ pub fn huff_compress_4x<R: Read, W: Write>(src: &mut BufReader<R>, dest: &mut Bu
 #[test]
 fn huff_compress()
 {
-
     use std::fs::OpenOptions;
+    use std::io::{BufReader,BufWriter};
     
     let fs = OpenOptions::new()
         .create(true)

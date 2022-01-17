@@ -158,48 +158,45 @@ impl BitStreamWriter
         * Loads are optimized to one  large variable , (single load is slower).
         *
         *
-        * The fifth symbol is the weird one since it doesn't fit into a u32 hence 
-        * it is handles in the last bit
         */
 
-        let large_entry = u32::from_le_bytes(symbols[0..4].try_into().unwrap());
-
+        
         macro_rules! encode_single {
             ($pos:tt) => {
-                let entry = entry[((large_entry >> ($pos)) & 255) as usize];
+                let entry = entry[symbols[$pos] as usize];
 
                 // add to the top bits
                 self.buf |= (u64::from(entry >> 8) << self.empty_bits);
 
-                 self.empty_bits += (entry & 0xFF) as u8;
+                self.empty_bits += (entry & 0xFF) as u8;
 
             };
         }
 
+        // TODO: Benchmarks report faster speeds when using
+        // movzxd than when using the earlier shift and get, benchmark 
+        // on linux to see.
         encode_single!(0);
 
-        encode_single!(8);
+        encode_single!(1);
 
-        encode_single!(16);
+        encode_single!(2);
 
-        encode_single!(24);
-        // the black sheep (can't fit into u32)
-        let entry = entry[usize::from(symbols[4])];
+        encode_single!(3);
 
-        // add to the top bits
-        self.buf |= u64::from(entry >> 8) << self.empty_bits;
-
-        self.empty_bits += (entry & 0xFF) as u8;
-
+        encode_single!(4);
+        
         // flush to output buffer
         self.flush_fast(out_buf);
     }
 
+    /// Flush bits to the output buffer 
+    /// 
+    /// After calling this routine, the bit buffer is guarranteed
+    /// to have less than 8 bits.
     pub unsafe fn flush_fast(&mut self, out_buf: &mut [u8])
     {
-        // bits are in the top buffer arranged in the top buffer following each other
-        // the first bit is in the MSB.
-        // take the big endian representation
+
         let buf = self.buf.to_le_bytes();
         // write 8 bytes
         out_buf
@@ -215,6 +212,7 @@ impl BitStreamWriter
 
         self.empty_bits &= 7;
     }
+    /// Set everything to zero.
     pub fn reset(&mut self)
     {
         self.empty_bits = 0;
