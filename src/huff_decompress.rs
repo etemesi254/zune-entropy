@@ -14,28 +14,28 @@ pub struct SingleEntry
     pub bits_consumed: u8,
 }
 
-struct HuffmanSingleDecompTable
+struct HuffmanSingleDecompTable<'a>
 {
     // this table is 8K bytes in memory
-    pub table: [SingleEntry; 1 << LIMIT],
+    pub table: &'a mut [SingleEntry;1<<LIMIT] ,
 }
 
-impl HuffmanSingleDecompTable
+impl<'a> HuffmanSingleDecompTable<'a>
 {
     /// Create a new Huffman Decompression instance
     fn new(
-        code_lengths: &[u8; LIMIT + 1], symbols: &[u8], reversed: [u32; 1 << LIMIT],
-    ) -> HuffmanSingleDecompTable
+        code_lengths: &[u8; LIMIT + 1], symbols: &[u8], table:&'a mut [SingleEntry;1<<LIMIT],reversed: &[u32; 1 << LIMIT],
+    ) -> HuffmanSingleDecompTable<'a>
     {
         let mut tbl = HuffmanSingleDecompTable {
-            table: [SingleEntry::default(); 1 << LIMIT],
+            table,
         };
         tbl.build_tree(code_lengths, symbols, reversed);
         tbl
     }
 
     pub fn build_tree(
-        &mut self, code_lengths: &[u8; LIMIT + 1], symbols: &[u8], reversed: [u32; 1 << LIMIT],
+        &mut self, code_lengths: &[u8; LIMIT + 1], symbols: &[u8], reversed: &[u32; 1 << LIMIT],
     )
     {
         let mut code = 0;
@@ -139,7 +139,7 @@ pub fn huff_decompress_4x<R: Read, W: Write>(src: &mut R, dest: &mut W)
     let mut source = vec![0; block_length as usize];
 
     let mut dest_temp = vec![0; block_length as usize];
-
+    let mut tbl = [SingleEntry::default();1<<LIMIT];
     let reversed = reverse_bits();
     loop
     {
@@ -180,7 +180,7 @@ pub fn huff_decompress_4x<R: Read, W: Write>(src: &mut R, dest: &mut W)
 
         src.read_exact(&mut symbols).unwrap();
 
-        let huff_table = HuffmanSingleDecompTable::new(&code_lengths, &symbols, reversed);
+        let huff_table = HuffmanSingleDecompTable::new(&code_lengths, &symbols, &mut tbl,&reversed);
 
         let huff_source = &mut source[0..end as usize];
 
