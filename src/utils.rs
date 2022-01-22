@@ -2,6 +2,8 @@
 
 use crate::huff_decompress::LIMIT;
 
+pub const REVERSED_BITS:[u32;1<<LIMIT] = reverse_bits();
+
 #[derive(Copy, Clone, Default, Debug)]
 pub struct Symbols
 {
@@ -18,18 +20,18 @@ pub struct Symbols
 impl Symbols
 {
     /// Create a needed representation
-    pub fn to_u32(self, reversed: [u32; 1 << LIMIT]) -> u32
+    pub fn to_u32(self) -> u32
     {
         //
         //
         // 0-8: code length
         // 8-19: code
-        (reversed[self.x as usize] >> (16 - self.code_length)) << 8 | u32::from(self.code_length)
+        (REVERSED_BITS[self.x as usize] >> (16 - self.code_length)) << 8 | u32::from(self.code_length)
     }
 }
 
 /// Calculate the occurrences of a byte in a distribution
-pub fn histogram(data: &[u8]) -> (u32, [Symbols; 256])
+pub fn histogram(data: &[u8]) -> [Symbols; 256]
 {
     /*
      * The reason for splitting 4x is largely represented by
@@ -87,7 +89,6 @@ pub fn histogram(data: &[u8]) -> (u32, [Symbols; 256])
     {
         start1[usize::from(*i)] += 1;
     }
-    let mut sum = 0;
     // add them together
     for (((((i,a), b), c), d), e) in val
         .iter_mut()
@@ -98,19 +99,19 @@ pub fn histogram(data: &[u8]) -> (u32, [Symbols; 256])
         .zip(start4.iter())
     {
         a.x += b + c + d + e;
-        sum += a.x;
-        a.symbol = (i) as u16;
+        a.symbol = i as u16;
     }
 
-    (sum, val)
+    val
 }
 
 /// Reverse bits from MSB to LSB
-pub fn reverse_bits() -> [u32; 1 << LIMIT]
+const fn reverse_bits() -> [u32; 1 << LIMIT]
 {
-    let mut results = [0; 2048];
-    for (i,result) in results.iter_mut().enumerate()
-    {
+    let mut results = [0_u32; 2048];
+    let mut i = 0_u32;
+    while i<2048{
+    
         // https://stackoverflow.com/questions/746171/efficient-algorithm-for-bit-reversal-from-msb-lsb-to-lsb-msb-in-c
         let mut codeword = i as u32;
 
@@ -126,7 +127,8 @@ pub fn reverse_bits() -> [u32; 1 << LIMIT]
         /* Flip adjacent 8-bit fields. */
         codeword = ((codeword & 0x00FF) << 8) | ((codeword & 0xFF00) >> 8);
 
-        *result = codeword;
+        results[i as usize] = codeword;
+        i+=1;
     }
-    results
+    return results;
 }

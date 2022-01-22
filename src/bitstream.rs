@@ -76,18 +76,19 @@ impl<'src> BitStreamReader<'src>
     /// Decode 5 symbols at a go.
     #[inline(always)]
     pub unsafe fn decode_multi(
-        &mut self, dest: &mut [u8; 56 / LIMIT], table: &[SingleEntry; (1 << LIMIT)],
+        &mut self, dest: &mut [u8; 56 / LIMIT], table: &[u16; (1 << LIMIT)],
     )
     {
         macro_rules! emit_one {
             ($pos:tt) => {
                 let entry = table[(self.peek_bits::<LIMIT>())];
+                let bits =(entry & 0xFF) as u8;
                 // remove bits read.
-                self.buffer >>= entry.bits_consumed;
+                self.buffer >>= bits;
 
-                self.bits_left -= entry.bits_consumed;
+                self.bits_left -= bits;
 
-                dest[$pos] = entry.symbol;
+                dest[$pos] = (entry>>8) as u8;
             };
         }
         self.refill_fast();

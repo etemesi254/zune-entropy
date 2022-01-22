@@ -22,9 +22,10 @@ use std::io::{Read, Seek, Write};
 
 use crate::bitstream::BitStreamWriter;
 use crate::huff_decompress::LIMIT;
-use crate::utils::{histogram, reverse_bits, Symbols};
+use crate::utils::{histogram, Symbols};
 
 const SMALL_CHUNK_SIZE: usize = 20;
+
 
 fn fast_log2(x: f32) -> f32
 {
@@ -219,10 +220,11 @@ fn generate_codes(symbols: &mut [Symbols; 256], non_zero: usize) -> [u8; LIMIT]
 
         code_lengths[usize::from(sym.code_length) - 1] += 1;
 
-        //sym.x = reversed_bits[code] >> (16-sym.code_length);
         sym.x = code;
+
         code += 1;
     }
+
     let mut sym_new = [Symbols::default(); 256];
     // put symbols in the right position.
     for sym in symbols.iter()
@@ -296,8 +298,7 @@ pub fn huff_compress_4x<R: Read + Seek, W: Write>(src: &mut R, dest: &mut W)
     // size is how many bytes were actually read.
     let mut size = src.read(&mut src_buf).unwrap();
 
-    let reversed_bits = reverse_bits();
-
+    
     // Initialize stream writers
     let mut stream1 = BitStreamWriter::new();
     let mut stream2 = BitStreamWriter::new();
@@ -325,10 +326,10 @@ pub fn huff_compress_4x<R: Read + Seek, W: Write>(src: &mut R, dest: &mut W)
         {
             let start = (src_chunk.len() + 3) / 5;
             // 1. Count items in the buffer for histogram statistics
-            let (hist_sum, mut freq_counts) = histogram(src_chunk);
+            let  mut freq_counts = histogram(src_chunk);
 
             // length limit
-            limited_kraft(&mut freq_counts, hist_sum);
+            limited_kraft(&mut freq_counts, size as u32);
 
             //find first non-zero element
             let non_zero = freq_counts
@@ -361,7 +362,7 @@ pub fn huff_compress_4x<R: Read + Seek, W: Write>(src: &mut R, dest: &mut W)
 
                 let freq_counts_stream = freq_counts
                     .iter()
-                    .map(|x| x.to_u32(reversed_bits))
+                    .map(|x| x.to_u32())
                     .collect::<Vec<u32>>();
 
                 let freq_count_stream: [u32; 256] = freq_counts_stream.try_into().unwrap();
@@ -444,7 +445,7 @@ pub fn huff_compress_4x<R: Read + Seek, W: Write>(src: &mut R, dest: &mut W)
                 // write headers
                 {
                     // total block size, in little endian
-                    dest.write_all(&size.to_le_bytes()[0..3])
+                    dest.write(&size.to_le_bytes()[0..3])
                         .expect("Could not write block size");
                     // Todo, add checksum
                     dest.write_all(&[0, 0, 0]).expect("Could not write checksum ");

@@ -2,9 +2,7 @@
 
 use std::io::{Read, Write};
 
-use crate::bitstream::BitStreamReader;
-use crate::utils::reverse_bits;
-
+use crate::{bitstream::BitStreamReader, utils::REVERSED_BITS};
 pub const LIMIT: usize = 11;
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -17,25 +15,25 @@ pub struct SingleEntry
 struct HuffmanSingleDecompTable<'a>
 {
     // this table is 8K bytes in memory
-    pub table: &'a mut [SingleEntry;1<<LIMIT] ,
+    pub table: &'a mut [u16;1<<LIMIT] ,
 }
 
 impl<'a> HuffmanSingleDecompTable<'a>
 {
     /// Create a new Huffman Decompression instance
     fn new(
-        code_lengths: &[u8; LIMIT + 1], symbols: &[u8], table:&'a mut [SingleEntry;1<<LIMIT],reversed: &[u32; 1 << LIMIT],
+        code_lengths: &[u8; LIMIT + 1], symbols: &[u8], table:&'a mut [u16;1<<LIMIT],
     ) -> HuffmanSingleDecompTable<'a>
     {
         let mut tbl = HuffmanSingleDecompTable {
             table,
         };
-        tbl.build_tree(code_lengths, symbols, reversed);
+        tbl.build_tree(code_lengths, symbols);
         tbl
     }
 
     pub fn build_tree(
-        &mut self, code_lengths: &[u8; LIMIT + 1], symbols: &[u8], reversed: &[u32; 1 << LIMIT],
+        &mut self, code_lengths: &[u8; LIMIT + 1], symbols: &[u8],
     )
     {
         let mut code = 0;
@@ -51,11 +49,10 @@ impl<'a> HuffmanSingleDecompTable<'a>
                 for k in 0..(1 << (LIMIT - i))
                 {
                     let entry = &mut self.table
-                        [(reversed[(look_bits + k) as usize] >> (16 - LIMIT)) as usize];
+                        [(REVERSED_BITS[(look_bits + k) as usize] >> (16 - LIMIT)) as usize];
 
-                    entry.bits_consumed = i as u8;
 
-                    entry.symbol = symbols[p];
+                    *entry |= u16::from(symbols[p])<<8 |(i as u16);
                 }
                 p += 1;
 
@@ -135,12 +132,15 @@ pub fn huff_decompress_4x<R: Read, W: Write>(src: &mut R, dest: &mut W)
 
     let mut block_length = u32::from_le_bytes(length);
 
-    // not all bits will be used
+    // not all bytes will be used
     let mut source = vec![0; block_length as usize];
 
+    // we know that blocks have equal sizes except the last one
+    // so if we read the first one we can determine how much space we will need
     let mut dest_temp = vec![0; block_length as usize];
-    let mut tbl = [SingleEntry::default();1<<LIMIT];
-    let reversed = reverse_bits();
+    
+    let mut tbl = [0;1<<LIMIT];
+    
     loop
     {
         block_length = u32::from_le_bytes(length);
@@ -180,7 +180,7 @@ pub fn huff_decompress_4x<R: Read, W: Write>(src: &mut R, dest: &mut W)
 
         src.read_exact(&mut symbols).unwrap();
 
-        let huff_table = HuffmanSingleDecompTable::new(&code_lengths, &symbols, &mut tbl,&reversed);
+        let huff_table = HuffmanSingleDecompTable::new(&code_lengths, &symbols, &mut tbl);
 
         let huff_source = &mut source[0..end as usize];
 
