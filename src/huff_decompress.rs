@@ -5,12 +5,6 @@ use std::io::{Read, Write};
 use crate::{bitstream::BitStreamReader, utils::REVERSED_BITS};
 pub const LIMIT: usize = 11;
 
-#[derive(Copy, Clone, Debug, Default)]
-pub struct SingleEntry
-{
-    pub symbol: u8,
-    pub bits_consumed: u8,
-}
 
 struct HuffmanSingleDecompTable<'a>
 {
@@ -90,11 +84,11 @@ fn decompress_huff_inner(
         let entries = &table.table;
 
         for ((((a, b), c), d), e) in dest1
-            .chunks_exact_mut(20)
-            .zip(dest2.chunks_exact_mut(20))
-            .zip(dest3.chunks_exact_mut(20))
-            .zip(dest4.chunks_exact_mut(20))
-            .zip(dest5.chunks_exact_mut(20))
+            .chunks_exact_mut(5)
+            .zip(dest2.chunks_exact_mut(5))
+            .zip(dest3.chunks_exact_mut(5))
+            .zip(dest4.chunks_exact_mut(5))
+            .zip(dest5.chunks_exact_mut(5))
         {
             // check that there is at least 11*20(220 ) bytes in the buffer
             if !stream1.check_first()
@@ -107,19 +101,28 @@ fn decompress_huff_inner(
             }
             // decode bytes, up to twenty symbols per loop.
             macro_rules! decode_single {
-                ($a:tt,$b:tt) => {
-                    stream1.decode_multi(a.get_mut($a..$b).unwrap().try_into().unwrap(), entries);
-                    stream2.decode_multi(b.get_mut($a..$b).unwrap().try_into().unwrap(), entries);
-                    stream3.decode_multi(c.get_mut($a..$b).unwrap().try_into().unwrap(), entries);
-                    stream4.decode_multi(d.get_mut($a..$b).unwrap().try_into().unwrap(), entries);
-                    stream5.decode_multi(e.get_mut($a..$b).unwrap().try_into().unwrap(), entries);
+                ($index:tt) => {
+
+            stream1.decode_single(a.get_mut($index).unwrap(),entries);
+            stream2.decode_single(b.get_mut($index).unwrap(),entries);
+            stream3.decode_single(c.get_mut($index).unwrap(),entries);
+            stream4.decode_single(d.get_mut($index).unwrap(),entries);
+            stream5.decode_single(e.get_mut($index).unwrap(),entries);
                 };
             }
+            stream1.refill_fast();
+            stream2.refill_fast();
+            stream3.refill_fast();
+            stream4.refill_fast();
+            stream5.refill_fast();
 
-            decode_single!(0, 5);
-            decode_single!(5, 10);
-            decode_single!(10, 15);
-            decode_single!(15, 20);
+            decode_single!(0);
+            decode_single!(1);
+            decode_single!(2);
+            decode_single!(3);
+            decode_single!(4);
+
+
         }
     }
 }

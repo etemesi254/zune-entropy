@@ -2,7 +2,7 @@
 //!
 //! This module provides an interface to read and write bits (and bytes)
 
-use crate::huff_decompress::{SingleEntry, LIMIT};
+use crate::huff_decompress::LIMIT;
 
 pub struct BitStreamReader<'src>
 {
@@ -75,28 +75,19 @@ impl<'src> BitStreamReader<'src>
     }
     /// Decode 5 symbols at a go.
     #[inline(always)]
-    pub unsafe fn decode_multi(
-        &mut self, dest: &mut [u8; 56 / LIMIT], table: &[u16; (1 << LIMIT)],
+    pub unsafe fn decode_single(
+        &mut self, dest: &mut u8, table: &[u16; (1 << LIMIT)],
     )
     {
-        macro_rules! emit_one {
-            ($pos:tt) => {
                 let entry = table[(self.peek_bits::<LIMIT>())];
                 let bits =(entry & 0xFF) as u8;
                 // remove bits read.
                 self.buffer >>= bits;
 
                 self.bits_left -= bits;
+                // write to position
+                *dest = (entry>>8) as u8;
 
-                dest[$pos] = (entry>>8) as u8;
-            };
-        }
-        self.refill_fast();
-        emit_one!(0);
-        emit_one!(1);
-        emit_one!(2);
-        emit_one!(3);
-        emit_one!(4);
     }
     #[inline(always)]
     pub fn check_first(&mut self) -> bool
