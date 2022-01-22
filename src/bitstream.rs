@@ -2,13 +2,8 @@
 //!
 //! This module provides an interface to read and write bits (and bytes)
 
+use crate::huff_decompress::{SingleEntry, LIMIT};
 
-#[derive(Eq, PartialEq, Clone, Copy)]
-pub enum Flags
-{
-    UnderFlow,
-    Normal,
-}
 pub struct BitStreamReader<'src>
 {
     // buffer from which we are pulling in bits from
@@ -16,8 +11,9 @@ pub struct BitStreamReader<'src>
     src: &'src [u8],
     // position in our buffer,
     position: usize,
-    // End of buffer flag
-    flag: Flags,
+
+    bits_left: u8,
+    buffer: u64,
 }
 
 impl<'src> BitStreamReader<'src>
@@ -29,26 +25,19 @@ impl<'src> BitStreamReader<'src>
     /// if not, this becomes UB in the refill phase.
     pub fn new(in_buffer: &'src [u8]) -> BitStreamReader<'src>
     {
-        let stream = BitStreamReader {
+        BitStreamReader {
+            bits_left: 0,
+            buffer: 0,
             src: in_buffer,
-            // buffer is read from end to start.
-            position: in_buffer.len(),
-            flag: Flags::Normal,
-        };
-
-        // return
-        stream
+            position: 0,
+        }
     }
     /// Refill the bitstream ensuring the buffer has bits between
     /// 56 and 63.
     ///
     #[inline(always)]
-    pub unsafe fn refill_fast(
-        &mut self, // current buffer of our bits
-        buffer: &mut u64,
-        // how many bits are left
-        bits_left: &mut u8,
-    ) -> Flags
+    pub unsafe fn refill_fast(&mut self, // current buffer of our bits
+    )
     {
         /*
          * The refill always guarantees refills between 56-63
@@ -60,48 +49,71 @@ impl<'src> BitStreamReader<'src>
          * Bits stored will never go above 63 and if bits are in the range 56-63 no refills occur.
          */
 
-        // read 8 bytes to a temporary buffer
-        if self.position <= 8
-        {
-            // switch to the careful reload
-            self.flag = Flags::UnderFlow;
-            return self.flag;
-        }
-
         let mut buf = [0; 8];
 
         // position points to the end initially, so subtracting means we
         // are reading the buffer from end to start.
-        std::ptr::copy_nonoverlapping(
-            self.src.as_ptr().sub(self.position - 8),
-            buf.as_mut_ptr(),
-            8,
-        );
+        std::ptr::copy_nonoverlapping(self.src.as_ptr().add(self.position), buf.as_mut_ptr(), 8);
 
         // create a u64 from an array of u8's
         let new_buffer = u64::from_le_bytes(buf);
         // num indicates how many bytes we actually consumed.
         // since bytes occupy 8 bits, we have to consume bits in multiples of 8.
-        let num = (i32::from(63 - *bits_left) & (-8)) as u8;
-        // Subtract what we read from pointer
-        self.position -= (num >> 3) as usize;
+        let num = (63 - self.bits_left) & 56;
+        // offset position
+        self.position += (num >> 3) as usize;
         // shift number of bits
-        *buffer |= new_buffer >> num;
+        self.buffer |= new_buffer << self.bits_left;
         // update bits left
         // bits left are now between 56-63
-        *bits_left |= 56;
+        self.bits_left |= 56;
+    }
+    #[inline(always)]
+    pub const fn peek_bits<const LOOKAHEAD: usize>(&self) -> usize
+    {
+        (self.buffer & ((1 << LOOKAHEAD) - 1)) as usize
+    }
+    /// Decode 5 symbols at a go.
+    #[inline(always)]
+    pub unsafe fn decode_multi(
+        &mut self, dest: &mut [u8; 56 / LIMIT], table: &[SingleEntry; (1 << LIMIT)],
+    )
+    {
+        macro_rules! emit_one {
+            ($pos:tt) => {
+                let entry = table[(self.peek_bits::<LIMIT>())];
+                // remove bits read.
+                self.buffer >>= entry.bits_consumed;
 
-        return self.flag;
+                self.bits_left -= entry.bits_consumed;
+
+                dest[$pos] = entry.symbol;
+            };
+        }
+        self.refill_fast();
+        emit_one!(0);
+        emit_one!(1);
+        emit_one!(2);
+        emit_one!(3);
+        emit_one!(4);
+    }
+    #[inline(always)]
+    pub fn check_first(&mut self) -> bool
+    {
+        //check if we have enough bits in src to guarrantee a fast refill
+        self.position + 220 < self.src.len()
     }
 }
 
+/// A compact bit writer for the Huffman encoding.
+/// algorithm.
 pub struct BitStreamWriter
 {
-    // kept below
-    empty_bits: u8,
+    // Number of actual bits in the bit buffer.
+    bits_in_buffer: u8,
     // should I use usize?
-    //
     buf: u64,
+    // position to write this in the output buffer
     position: usize,
 }
 
@@ -111,7 +123,7 @@ impl BitStreamWriter
     {
         BitStreamWriter {
             buf: 0,
-            empty_bits: 0,
+            bits_in_buffer: 0,
             position: 0,
         }
     }
@@ -119,14 +131,15 @@ impl BitStreamWriter
     pub fn write_bits_slow(&mut self, symbols: &[u8], entries: &[u32; 256], out_buf: &mut [u8])
     {
         let mut flush_bit = 0;
+
         for symbol in symbols
         {
             let entry = entries[usize::from(*symbol)];
 
             // add to the top bits
-            self.buf |= u64::from(entry >> 8) << self.empty_bits;
-            
-            self.empty_bits += (entry & 0xFF) as u8;
+            self.buf |= u64::from(entry >> 8) << self.bits_in_buffer;
+
+            self.bits_in_buffer += (entry & 0xFF) as u8;
 
             flush_bit += 1;
 
@@ -149,32 +162,24 @@ impl BitStreamWriter
     )
     {
         /*
-        *The limit is 11 bits per symbol, therefore we can go
-        * to 5 symbols per encode (55).
-        *
-        * The symbols are read in little endian order, symbol[0] is stored
-        * at bits 24..32(for variable large_entry). symbol[4] is stored at bit position(0..8)
-        *
-        * Loads are optimized to one  large variable , (single load is slower).
-        *
-        *
-        */
-
-        
+         *The limit is 11 bits per symbol, therefore we can go
+         * to 5 symbols per encode (55) before flushing.
+         *
+         * The bits are added in a fifo manner with the bits representing the first
+         * symbol
+         */
         macro_rules! encode_single {
             ($pos:tt) => {
                 let entry = entry[symbols[$pos] as usize];
 
                 // add to the top bits
-                self.buf |= (u64::from(entry >> 8) << self.empty_bits);
+                self.buf |= (u64::from(entry >> 8) << self.bits_in_buffer);
 
-                self.empty_bits += (entry & 0xFF) as u8;
-
+                self.bits_in_buffer += (entry & 0xFF) as u8;
             };
         }
-
         // TODO: Benchmarks report faster speeds when using
-        // movzxd than when using the earlier shift and get, benchmark 
+        // movzxd than when using the earlier shift and get, benchmark
         // on linux to see.
         encode_single!(0);
 
@@ -185,17 +190,25 @@ impl BitStreamWriter
         encode_single!(3);
 
         encode_single!(4);
-        
+
         // flush to output buffer
         self.flush_fast(out_buf);
     }
 
-    /// Flush bits to the output buffer 
-    /// 
-    /// After calling this routine, the bit buffer is guarranteed
+    /// Flush bits to the output buffer
+    ///
+    /// After calling this routine, the bit buffer is guaranteed
     /// to have less than 8 bits.
-    pub unsafe fn flush_fast(&mut self, out_buf: &mut [u8])
+    #[inline(always)]
+    unsafe fn flush_fast(&mut self, out_buf: &mut [u8])
     {
+        /*
+        * Most of this is from Eric Biggers libdeflate
+        * @ https://github.com/ebiggers/libdeflate/blob/master/lib/deflate_compress.c
+        *
+        * Which has some nice properties , branchless writes high ILP etc etc.
+
+        */
 
         let buf = self.buf.to_le_bytes();
         // write 8 bytes
@@ -204,18 +217,26 @@ impl BitStreamWriter
             .add(self.position)
             .copy_from(buf.as_ptr(), 8);
         // but update position to point to the full number of symbols we read
-        let bytes_written = self.empty_bits & 56;
+        let bytes_written = self.bits_in_buffer & 56;
         // remove those bits we read.
         self.buf >>= bytes_written;
         // increment position
         self.position += (bytes_written >> 3) as usize;
 
-        self.empty_bits &= 7;
+        self.bits_in_buffer &= 7;
+    }
+    #[cold]
+    pub unsafe fn flush_final(&mut self, out_buf: &mut [u8])
+    {
+        // shift buffer by 7, so that the remaining bits are in the range 8-15
+        self.buf <<= 7;
+        self.bits_in_buffer += 7;
+        self.flush_fast(out_buf);
     }
     /// Set everything to zero.
     pub fn reset(&mut self)
     {
-        self.empty_bits = 0;
+        self.bits_in_buffer = 0;
         self.buf = 0;
         self.position = 0;
     }

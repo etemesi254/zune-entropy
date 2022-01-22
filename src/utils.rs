@@ -1,5 +1,7 @@
 //! Small function utilities for compression and decompression
 
+use crate::huff_decompress::LIMIT;
+
 #[derive(Copy, Clone, Default, Debug)]
 pub struct Symbols
 {
@@ -16,11 +18,13 @@ pub struct Symbols
 impl Symbols
 {
     /// Create a needed representation
-    pub fn to_u32(&self) -> u32
+    pub fn to_u32(self, reversed: [u32; 1 << LIMIT]) -> u32
     {
-        // format
-        // shift up code lengths by 4 bits
-        (self.x) << 8 | u32::from(self.code_length)
+        //
+        //
+        // 0-8: code length
+        // 8-19: code
+        (reversed[self.x as usize] >> (16 - self.code_length)) << 8 | u32::from(self.code_length)
     }
 }
 
@@ -83,11 +87,11 @@ pub fn histogram(data: &[u8]) -> (u32, [Symbols; 256])
     {
         start1[usize::from(*i)] += 1;
     }
-    let mut i = 0;
     let mut sum = 0;
     // add them together
-    for ((((a, b), c), d), e) in val
+    for (((((i,a), b), c), d), e) in val
         .iter_mut()
+        .enumerate()
         .zip(start1.iter())
         .zip(start2.iter())
         .zip(start3.iter())
@@ -95,9 +99,34 @@ pub fn histogram(data: &[u8]) -> (u32, [Symbols; 256])
     {
         a.x += b + c + d + e;
         sum += a.x;
-        a.symbol = i;
-        i += 1;
+        a.symbol = (i) as u16;
     }
 
-    return (sum, val);
+    (sum, val)
+}
+
+/// Reverse bits from MSB to LSB
+pub fn reverse_bits() -> [u32; 1 << LIMIT]
+{
+    let mut results = [0; 2048];
+    for (i,result) in results.iter_mut().enumerate()
+    {
+        // https://stackoverflow.com/questions/746171/efficient-algorithm-for-bit-reversal-from-msb-lsb-to-lsb-msb-in-c
+        let mut codeword = i as u32;
+
+        /* Flip adjacent 1-bit fields. */
+        codeword = ((codeword & 0x5555) << 1) | ((codeword & 0xAAAA) >> 1);
+
+        /* Flip adjacent 2-bit fields. */
+        codeword = ((codeword & 0x3333) << 2) | ((codeword & 0xCCCC) >> 2);
+
+        /* Flip adjacent 4-bit fields. */
+        codeword = ((codeword & 0x0F0F) << 4) | ((codeword & 0xF0F0) >> 4);
+
+        /* Flip adjacent 8-bit fields. */
+        codeword = ((codeword & 0x00FF) << 8) | ((codeword & 0xFF00) >> 8);
+
+        *result = codeword;
+    }
+    results
 }
