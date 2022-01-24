@@ -2,7 +2,7 @@
 //!
 //! This module provides an interface to read and write bits (and bytes)
 
-use crate::huff_decompress::LIMIT;
+use crate::constants::LIMIT;
 
 pub struct BitStreamReader<'src>
 {
@@ -36,8 +36,7 @@ impl<'src> BitStreamReader<'src>
     /// 56 and 63.
     ///
     #[inline(always)]
-    pub unsafe fn refill_fast(&mut self, // current buffer of our bits
-    )
+    pub unsafe fn refill_fast(&mut self)
     {
         /*
          * The refill always guarantees refills between 56-63
@@ -58,42 +57,59 @@ impl<'src> BitStreamReader<'src>
         // create a u64 from an array of u8's
         let new_buffer = u64::from_le_bytes(buf);
         // num indicates how many bytes we actually consumed.
-        // since bytes occupy 8 bits, we have to consume bits in multiples of 8.
-        let num = (63 - self.bits_left) & 56;
+        let num = 63 - self.bits_left;
         // offset position
         self.position += (num >> 3) as usize;
         // shift number of bits
         self.buffer |= new_buffer << self.bits_left;
+
         // update bits left
         // bits left are now between 56-63
         self.bits_left |= 56;
     }
+
     #[inline(always)]
     pub const fn peek_bits<const LOOKAHEAD: usize>(&self) -> usize
     {
         (self.buffer & ((1 << LOOKAHEAD) - 1)) as usize
     }
-    /// Decode 5 symbols at a go.
+    /// Decode a single symbol
     #[inline(always)]
-    pub unsafe fn decode_single(
-        &mut self, dest: &mut u8, table: &[u16; (1 << LIMIT)],
-    )
+    pub fn decode_single(&mut self, dest: &mut u8, table: &[u16; (1 << LIMIT)])
     {
-                let entry = table[(self.peek_bits::<LIMIT>())];
-                let bits =(entry & 0xFF) as u8;
-                // remove bits read.
-                self.buffer >>= bits;
+        let entry = table[(self.peek_bits::<LIMIT>())];
 
-                self.bits_left -= bits;
-                // write to position
-                *dest = (entry>>8) as u8;
+        let bits = (entry & 0xFF) as u8;
 
+        // remove bits read.
+        self.buffer >>= bits;
+
+        self.bits_left -= bits;
+        // write to position
+        *dest = (entry >> 8) as u8;
     }
-    #[inline(always)]
-    pub fn check_first(&mut self) -> bool
+
+    // Check that we didn't read past our buffer
+    pub fn check_final(&self) -> bool
     {
-        //check if we have enough bits in src to guarrantee a fast refill
-        self.position + 220 < self.src.len()
+        /*
+         * Here we take into account the position, and actual bits consumed
+         * since we may overshoot so we need to account for the bytes
+         */
+
+        self.position - (usize::from(self.bits_left >> 3)) == self.src.len()
+    }
+    /// Get current position of the inner buffer
+    pub fn get_position(&self) -> usize
+    {
+        // take into account the bytes not consumed in the current
+        // bitstream.
+        self.position - (usize::from(self.bits_left >> 3))
+    }
+    /// Get the length  of the inner buffer
+    pub fn get_src_len(&self) -> usize
+    {
+        self.src.len()
     }
 }
 
@@ -159,6 +175,7 @@ impl BitStreamWriter
          *
          * The bits are added in a fifo manner with the bits representing the first
          * symbol
+         *
          */
         macro_rules! encode_single {
             ($pos:tt) => {
@@ -210,7 +227,7 @@ impl BitStreamWriter
             .copy_from(buf.as_ptr(), 8);
         // but update position to point to the full number of symbols we read
         let bytes_written = self.bits_in_buffer & 56;
-        // remove those bits we read.
+        // remove those bits we wrote.
         self.buf >>= bytes_written;
         // increment position
         self.position += (bytes_written >> 3) as usize;
