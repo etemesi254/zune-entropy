@@ -21,11 +21,10 @@ use std::convert::TryInto;
 use std::io::{Read, Seek, Write};
 
 use crate::bitstream::BitStreamWriter;
-use crate::huff_decompress::LIMIT;
+use crate::constants::LIMIT;
 use crate::utils::{histogram, Symbols};
 
 const SMALL_CHUNK_SIZE: usize = 20;
-
 
 fn fast_log2(x: f32) -> f32
 {
@@ -44,7 +43,7 @@ fn fast_log2(x: f32) -> f32
     // 1/(1<<23)
     y *= 1.192_092_9e-7;
 
-     y - 124.225_52 - 1.498_030_3 * mx_f - 1.725_88 / (0.352_088_72 + mx_f)
+    y - 124.225_52 - 1.498_030_3 * mx_f - 1.725_88 / (0.352_088_72 + mx_f)
 }
 #[allow(clippy::mut_range_bound)]
 fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
@@ -150,7 +149,6 @@ fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
                 // iteration where the code length is
                 // less than the threshold for that iteration.
                 offset = i;
-
             }
         }
         if offset != 0
@@ -298,7 +296,6 @@ pub fn huff_compress_4x<R: Read + Seek, W: Write>(src: &mut R, dest: &mut W)
     // size is how many bytes were actually read.
     let mut size = src.read(&mut src_buf).unwrap();
 
-    
     // Initialize stream writers
     let mut stream1 = BitStreamWriter::new();
     let mut stream2 = BitStreamWriter::new();
@@ -311,7 +308,7 @@ pub fn huff_compress_4x<R: Read + Seek, W: Write>(src: &mut R, dest: &mut W)
     const START: usize = (CHUNK_SIZE + 4) / 5;
 
     // Initialize destination buffers.
-    // out buffer should be in buffer / 4 + 200 bytes extra for padding
+    // out buffer should be in buffer / 5 + 200 bytes extra for padding
     // use one large table +200 bytes(each get 200 bytes). and split into four smaller ones
 
     let (buf1, remainder) = buf.split_at_mut(START + 200);
@@ -326,7 +323,7 @@ pub fn huff_compress_4x<R: Read + Seek, W: Write>(src: &mut R, dest: &mut W)
         {
             let start = (src_chunk.len() + 3) / 5;
             // 1. Count items in the buffer for histogram statistics
-            let  mut freq_counts = histogram(src_chunk);
+            let mut freq_counts = histogram(src_chunk);
 
             // length limit
             limited_kraft(&mut freq_counts, size as u32);
@@ -360,35 +357,39 @@ pub fn huff_compress_4x<R: Read + Seek, W: Write>(src: &mut R, dest: &mut W)
                 // position 9.
                 let code_lengths = generate_codes(&mut freq_counts, non_zero);
 
-                let freq_counts_stream = freq_counts
-                    .iter()
-                    .map(|x| x.to_u32())
-                    .collect::<Vec<u32>>();
+                let freq_counts_stream = freq_counts.map(|x| x.to_u32());
 
-                let freq_count_stream: [u32; 256] = freq_counts_stream.try_into().unwrap();
+                let entries: [u32; 256] = freq_counts_stream.try_into().unwrap();
 
                 // Initialize read buffers
                 let (src1, remainder) = src_chunk.split_at(start);
+
                 let (src2, remainder) = remainder.split_at(start);
+
                 let (src3, remainder) = remainder.split_at(start);
+
                 let (src4, src5) = remainder.split_at(start);
                 // deal with symbols until all are aligned.
                 let start1 = src1.len() % SMALL_CHUNK_SIZE;
+
                 let start2 = src2.len() % SMALL_CHUNK_SIZE;
+
                 let start3 = src3.len() % SMALL_CHUNK_SIZE;
+
                 let start4 = src4.len() % SMALL_CHUNK_SIZE;
+
                 let start5 = src5.len() % SMALL_CHUNK_SIZE;
 
                 // write until all chunks are aligned to a 25 character boundary
-                stream1.write_bits_slow(&src1[0..start1], &freq_count_stream, buf1);
+                stream1.write_bits_slow(&src1[0..start1], &entries, buf1);
 
-                stream2.write_bits_slow(&src2[0..start2], &freq_count_stream, buf2);
+                stream2.write_bits_slow(&src2[0..start2], &entries, buf2);
 
-                stream3.write_bits_slow(&src3[0..start3], &freq_count_stream, buf3);
+                stream3.write_bits_slow(&src3[0..start3], &entries, buf3);
 
-                stream4.write_bits_slow(&src4[0..start4], &freq_count_stream, buf4);
+                stream4.write_bits_slow(&src4[0..start4], &entries, buf4);
 
-                stream5.write_bits_slow(&src5[0..start5], &freq_count_stream, buf5);
+                stream5.write_bits_slow(&src5[0..start5], &entries, buf5);
 
                 // now chunks are aligned to 25, no need to check for remainders because they won't be there
                 for ((((chunk1, chunk2), chunk3), chunk4), chunk5) in src1[start1..]
@@ -403,31 +404,37 @@ pub fn huff_compress_4x<R: Read + Seek, W: Write>(src: &mut R, dest: &mut W)
                             ($start:tt,$end:tt) => {
                                 stream1.write_bits_fast(
                                     chunk1[$start..$end].try_into().unwrap(),
-                                    &freq_count_stream,
+                                    &entries,
                                     buf1,
                                 );
                                 stream2.write_bits_fast(
                                     chunk2[$start..$end].try_into().unwrap(),
-                                    &freq_count_stream,
+                                    &entries,
                                     buf2,
                                 );
                                 stream3.write_bits_fast(
                                     chunk3[$start..$end].try_into().unwrap(),
-                                    &freq_count_stream,
+                                    &entries,
                                     buf3,
                                 );
                                 stream4.write_bits_fast(
                                     chunk4[$start..$end].try_into().unwrap(),
-                                    &freq_count_stream,
+                                    &entries,
                                     buf4,
                                 );
                                 stream5.write_bits_fast(
                                     chunk5[$start..$end].try_into().unwrap(),
-                                    &freq_count_stream,
+                                    &entries,
                                     buf5,
                                 );
                             };
                         }
+                        /*
+                         * This version where each writes 5 bytes ia noticeably
+                         * faster than where we write one bit with the streams
+                         * fighting for writes , probably due to some micro-architectural issue
+                         * I am yet to find.
+                         */
 
                         write_bits!(0, 5);
                         write_bits!(5, 10);
@@ -448,8 +455,11 @@ pub fn huff_compress_4x<R: Read + Seek, W: Write>(src: &mut R, dest: &mut W)
                     dest.write(&size.to_le_bytes()[0..3])
                         .expect("Could not write block size");
                     // Todo, add checksum
-                    dest.write_all(&[0, 0, 0]).expect("Could not write checksum ");
+                    dest.write_all(&[0, 0, 0])
+                        .expect("Could not write checksum ");
+
                     // add jump tables
+                    // 10 Bytes
                     dest.write_all(&stream1.get_position().to_le_bytes()[0..2])
                         .expect("Could not write jump table info");
 
@@ -464,7 +474,6 @@ pub fn huff_compress_4x<R: Read + Seek, W: Write>(src: &mut R, dest: &mut W)
 
                     dest.write_all(&stream5.get_position().to_le_bytes()[0..2])
                         .expect("Could not write jump table info");
-
                     // code lengths
                     dest.write_all(&code_lengths)
                         .expect("Could not write code lengths to buffer");
@@ -489,7 +498,7 @@ pub fn huff_compress_4x<R: Read + Seek, W: Write>(src: &mut R, dest: &mut W)
                 }
 
                 // write data
-                //These serve two purpose
+                // These serve two purpose
                 // 1. Write data
                 // 2. Check for data that is overwritten
                 //      -> The write_bits_fast may write to the next stream position(since we use one large vector
