@@ -83,8 +83,20 @@ impl<'src> BitStreamReader<'src>
 
         // remove bits read.
         self.buffer >>= bits;
-
-        self.bits_left -= bits;
+        // Rust generates the worst codegen here , some weird instructions which
+        // hurt performance,(888 Mb/s) , explicitly subtracting bumps up performance to a cool
+        // 1010 Mb/s
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            unsafe {
+                use std::arch::asm;
+                asm!("sub {0},{1}", inout(reg_byte) self.bits_left, in(reg_byte) bits);
+            }
+        }
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+        {
+            self.bits_left -= bits;
+        }
         // write to position
         *dest = (entry >> 8) as u8;
     }
