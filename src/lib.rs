@@ -1,6 +1,7 @@
 #![allow(clippy::assertions_on_constants)]
 #![warn(clippy::perf)]
 mod bitstream;
+mod constants;
 mod huff_compress;
 mod huff_decompress;
 mod io;
