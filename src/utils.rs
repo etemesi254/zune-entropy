@@ -2,7 +2,7 @@
 
 use crate::huff_decompress::LIMIT;
 
-pub const REVERSED_BITS:[u32;1<<LIMIT] = reverse_bits();
+pub const REVERSED_BITS: [u32; 1 << LIMIT] = reverse_bits();
 
 #[derive(Copy, Clone, Default, Debug)]
 pub struct Symbols
@@ -26,7 +26,8 @@ impl Symbols
         //
         // 0-8: code length
         // 8-19: code
-        (REVERSED_BITS[self.x as usize] >> (16 - self.code_length)) << 8 | u32::from(self.code_length)
+        (REVERSED_BITS[self.x as usize] >> (16 - self.code_length)) << 8
+            | u32::from(self.code_length)
     }
 }
 
@@ -90,7 +91,7 @@ pub fn histogram(data: &[u8]) -> [Symbols; 256]
         start1[usize::from(*i)] += 1;
     }
     // add them together
-    for (((((i,a), b), c), d), e) in val
+    for (((((i, a), b), c), d), e) in val
         .iter_mut()
         .enumerate()
         .zip(start1.iter())
@@ -110,8 +111,8 @@ const fn reverse_bits() -> [u32; 1 << LIMIT]
 {
     let mut results = [0_u32; 2048];
     let mut i = 0_u32;
-    while i<2048{
-    
+    while i < 2048
+    {
         // https://stackoverflow.com/questions/746171/efficient-algorithm-for-bit-reversal-from-msb-lsb-to-lsb-msb-in-c
         let mut codeword = i as u32;
 
@@ -128,7 +129,7 @@ const fn reverse_bits() -> [u32; 1 << LIMIT]
         codeword = ((codeword & 0x00FF) << 8) | ((codeword & 0xFF00) >> 8);
 
         results[i as usize] = codeword;
-        i+=1;
+        i += 1;
     }
     return results;
 }
