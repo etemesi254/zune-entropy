@@ -62,7 +62,6 @@ impl<'src> BitStreamReader<'src>
         self.position += (num >> 3) as usize;
         // shift number of bits
         self.buffer |= new_buffer << self.bits_left;
-
         // update bits left
         // bits left are now between 56-63
         self.bits_left |= 56;
@@ -83,11 +82,13 @@ impl<'src> BitStreamReader<'src>
 
         // remove bits read.
         self.buffer >>= bits;
+        //
         // Rust generates the worst codegen here , some weird instructions which
         // hurt performance,(888 Mb/s) , explicitly subtracting bumps up performance to a cool
         // 1010 Mb/s
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
+            // this forces the compiler to keep values in register
             unsafe {
                 use std::arch::asm;
                 asm!("sub {0},{1}", inout(reg_byte) self.bits_left, in(reg_byte) bits);
@@ -95,9 +96,31 @@ impl<'src> BitStreamReader<'src>
         }
         #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
         {
+            // other architectures, normal subtraction,
             self.bits_left -= bits;
         }
         // write to position
+        *dest = (entry >> 8) as u8;
+    }
+    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"),target_feature="bmi2"))]
+    pub fn decode_single(&mut self, dest: &mut u8, table: &[u16; (1 << LIMIT)])
+    {
+        let entry = table[(self.peek_bits::<LIMIT>())];
+
+        unsafe {
+            use std::arch::asm;
+
+            // keep values in register Rust.
+            asm!(
+                 "shrx {buf}, {buf}, {entry:r}",
+                 "sub {bits_left},{entry:l}",
+
+                buf= inout(reg) self.buffer,
+                entry = in(reg_abcd) entry,
+                bits_left = inout(reg_byte) self.bits_left,
+
+            );
+        }
         *dest = (entry >> 8) as u8;
     }
 
