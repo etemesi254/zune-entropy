@@ -1,6 +1,6 @@
 //! This module provides huffman encoding and decoding routines
 
-use std::io::{Read, Write};
+use std::io::{ Read};
 
 use crate::bitstream::BitStreamReader;
 pub use crate::constants::LIMIT;
@@ -293,8 +293,12 @@ fn decompress_huff_inner(
     );
     // everything is good, we won Mr Stark.
 }
-
-pub fn huff_decompress_4x<R: Read, W: Write>(src: &mut R, dest: &mut W)
+/// Read Huffman Compressed data from src and write into dest
+///
+/// Caveats to understand for dest
+/// we will write from `dest.len()`  going forward, after decompression
+/// is done , dest.len() will contain uncompressed data
+pub fn huff_decompress_4x<R: Read>(src: &mut R, dest: &mut Vec<u8>)
 {
     let mut length = [0, 0, 0, 0];
     // read the length
@@ -307,7 +311,6 @@ pub fn huff_decompress_4x<R: Read, W: Write>(src: &mut R, dest: &mut W)
 
     // we know that blocks have equal sizes except the last one
     // so if we read the first one we can determine how much space we will need
-    let mut dest_temp = vec![0; block_length as usize];
 
     let mut tbl = [0; 1 << LIMIT];
 
@@ -322,6 +325,12 @@ pub fn huff_decompress_4x<R: Read, W: Write>(src: &mut R, dest: &mut W)
     loop
     {
         block_length = u32::from_le_bytes(length);
+
+        if dest.capacity() <= (block_length as usize + dest.len()) 
+        {
+            
+            dest.reserve(block_length as usize);
+        }
         // read checksum
         src.read_exact(&mut checksum).unwrap();
         // read jump table
@@ -354,19 +363,37 @@ pub fn huff_decompress_4x<R: Read, W: Write>(src: &mut R, dest: &mut W)
         let huff_source = &mut source[0..end as usize];
 
         src.read_exact(huff_source).unwrap();
+        // new length
+        let start = dest.len();
 
-        // now we have offsets, streams and everything we need to decode. Let's go
+        let new_len = dest.len() + block_length as usize;
+        // set length to be the capacity
+        if new_len > dest.capacity()
+        {
+            let cap = dest.capacity();
+            dest.reserve(new_len - cap);
+        }
+        // Don't continue if we don't have capacity to create a new write
+        assert!(
+            new_len <= dest.capacity(),
+            "{},{}",
+            new_len,
+            dest.capacity()
+        );
+
+        // this is the laziest way to use uninitialized memory
+        // 1. We know decompress_huff_inner will write to the region
+        // between
+        unsafe { dest.set_len(new_len) };
+
         decompress_huff_inner(
             huff_source,
             &tbl,
             &offsets,
             block_length as usize,
-            dest_temp.get_mut(0..block_length as usize).unwrap(),
+            // write to unintialized memory :)
+            dest.get_mut(start..).unwrap(),
         );
-        // copy dest_temp to writer
-        dest.write_all(&dest_temp[0..block_length as usize])
-            .unwrap();
-
         // read the length for the next iteration
         if src.read_exact(length.get_mut(0..3).unwrap()).is_err()
         {
@@ -420,6 +447,6 @@ fn huff_decompress()
             .unwrap();
         let mut fd = BufWriter::new(fd);
 
-        huff_decompress_4x(&mut fs, &mut fd);
+        //huff_decompress_4x(&mut fs, &mut fd);
     }
 }
