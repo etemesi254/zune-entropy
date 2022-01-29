@@ -18,7 +18,7 @@
 //!
 //!
 use std::convert::TryInto;
-use std::io::{Read, Seek, Write};
+use std::io::{BufRead, Read, Write};
 
 use crate::bitstream::BitStreamWriter;
 use crate::constants::LIMIT;
@@ -236,7 +236,7 @@ fn generate_codes(symbols: &mut [Symbols; 256], non_zero: usize) -> [u8; LIMIT]
 
 /// Compress a buffer `src` and store it into
 /// buffer `dest`
-pub fn huff_compress_4x<R: Read + Seek, W: Write>(src: &mut R, dest: &mut W)
+pub fn huff_compress_4x<R: Read + BufRead, W: Write>(src: &mut R, dest: &mut W)
 {
     /*
      * Main code for compression.
@@ -272,7 +272,7 @@ pub fn huff_compress_4x<R: Read + Seek, W: Write>(src: &mut R, dest: &mut W)
      */
 
     // Config parameter, large numbers use more memory
-    // compress faster BUT hurt compression.
+    // compress faster BUT hurts compression.
     // Smaller ones favour compression but hurt speed.
 
     // summary 323 mb enwiki file (head  -n 4000000 ./enwiki > enwiki.small)
@@ -357,9 +357,7 @@ pub fn huff_compress_4x<R: Read + Seek, W: Write>(src: &mut R, dest: &mut W)
                 // position 9.
                 let code_lengths = generate_codes(&mut freq_counts, non_zero);
 
-                let freq_counts_stream = freq_counts.map(|x| x.to_u32());
-
-                let entries: [u32; 256] = freq_counts_stream.try_into().unwrap();
+                let entries = freq_counts.map(|x| x.to_u32());
 
                 // Initialize read buffers
                 let (src1, remainder) = src_chunk.split_at(start);
@@ -527,10 +525,12 @@ pub fn huff_compress_4x<R: Read + Seek, W: Write>(src: &mut R, dest: &mut W)
             }
         }
 
+        // pull some more bits
         size = src.read(&mut src_buf).unwrap();
 
         if size == 0
         {
+            // we're done
             break;
         }
     }
