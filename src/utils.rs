@@ -68,8 +68,6 @@ pub fn histogram(data: &[u8]) -> [Symbols; 256]
 
         let tmp1 = u64::from_le_bytes(i[0..8].try_into().unwrap());
 
-        //*hasher = hash(*hasher);
-
         start1[((tmp1 >> 56) & 255) as usize] += 1;
 
         start2[((tmp1 >> 48) & 255) as usize] += 1;
@@ -100,6 +98,7 @@ pub fn histogram(data: &[u8]) -> [Symbols; 256]
         .zip(start4.iter())
     {
         a.x += b + c + d + e;
+
         a.symbol = i as u16;
     }
 
@@ -109,11 +108,19 @@ pub fn histogram(data: &[u8]) -> [Symbols; 256]
 /// Reverse bits from MSB to LSB
 const fn reverse_bits() -> [u32; 1 << LIMIT]
 {
+    /* this is an implementation from Eric Biggers libdeflate
+     * see https://github.com/ebiggers/libdeflate
+     * which is a variation of the famous stanford website bit hacks
+     * @ https://graphics.stanford.edu/~seander/bithacks.html#BitReverseObvious
+     * and a question asked in Stackoverflow
+     * @ https://stackoverflow.com/questions/746171/efficient-algorithm-for-bit-reversal-from-msb-lsb-to-lsb-msb-in-c
+     *
+     * The only difference is that we do this during compilation and store the result in binary.
+     */
     let mut results = [0_u32; 2048];
     let mut i = 0_u32;
     while i < 2048
     {
-        // https://stackoverflow.com/questions/746171/efficient-algorithm-for-bit-reversal-from-msb-lsb-to-lsb-msb-in-c
         let mut codeword = i as u32;
 
         /* Flip adjacent 1-bit fields. */
@@ -129,6 +136,7 @@ const fn reverse_bits() -> [u32; 1 << LIMIT]
         codeword = ((codeword & 0x00FF) << 8) | ((codeword & 0xFF00) >> 8);
 
         results[i as usize] = codeword;
+
         i += 1;
     }
     return results;
