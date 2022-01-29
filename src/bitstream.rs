@@ -50,8 +50,6 @@ impl<'src> BitStreamReader<'src>
 
         let mut buf = [0; 8];
 
-        // position points to the end initially, so subtracting means we
-        // are reading the buffer from end to start.
         std::ptr::copy_nonoverlapping(self.src.as_ptr().add(self.position), buf.as_mut_ptr(), 8);
 
         // create a u64 from an array of u8's
@@ -74,6 +72,7 @@ impl<'src> BitStreamReader<'src>
     }
     /// Decode a single symbol
     #[inline(always)]
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))] // bmi support
     pub fn decode_single(&mut self, dest: &mut u8, table: &[u16; (1 << LIMIT)])
     {
         let entry = table[(self.peek_bits::<LIMIT>())];
@@ -102,9 +101,20 @@ impl<'src> BitStreamReader<'src>
         // write to position
         *dest = (entry >> 8) as u8;
     }
-    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"),target_feature="bmi2"))]
+    #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
     pub fn decode_single(&mut self, dest: &mut u8, table: &[u16; (1 << LIMIT)])
     {
+        /*
+         * Generate better code for CPUs supporting BMI2,
+         * this is a compile time constraint and should be enabled via
+         * RUSTFLAGS ="-C target-features=+bmi2" cargo build --release to enable it.
+         *
+         * Performance difference is about 90 Mb/s(1100 Mb/s vs 1010 Mb/s) better compared to  the decode_single one
+         * (AMD Ryzen 3600U)
+         *
+         * The main issue is that Rust spills values to memory even when not needed.
+         * forcing use of asm tells Rust to keep them in registers and not memory,
+         */
         let entry = table[(self.peek_bits::<LIMIT>())];
 
         unsafe {
@@ -112,8 +122,8 @@ impl<'src> BitStreamReader<'src>
 
             // keep values in register Rust.
             asm!(
-                 "shrx {buf}, {buf}, {entry:r}",
-                 "sub {bits_left},{entry:l}",
+                 "shrx {buf}, {buf}, {entry:r}", // self.buf >>= (entry & 0xFF);
+                 "sub {bits_left},{entry:r}", // self.bits_left -= (entry & 0xFF);
 
                 buf= inout(reg) self.buffer,
                 entry = in(reg_abcd) entry,
