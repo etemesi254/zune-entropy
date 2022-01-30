@@ -122,8 +122,10 @@ impl<'src> BitStreamReader<'src>
 
             // keep values in register Rust.
             asm!(
+                // shrx instruction uses the lower 0-6 bits of the last(entry:r) register, that's why ther
+                // is no explicit masking
                  "shrx {buf}, {buf}, {entry:r}", // self.buf >>= (entry & 0xFF);
-                 "sub {bits_left},{entry:r}", // self.bits_left -= (entry & 0xFF);
+                 "sub {bits_left},{entry:l}", // self.bits_left -= (entry & 0xFF);
 
                 buf= inout(reg) self.buffer,
                 entry = in(reg_abcd) entry,
@@ -282,9 +284,12 @@ impl BitStreamWriter
     #[cold]
     pub unsafe fn flush_final(&mut self, out_buf: &mut [u8])
     {
-        // shift buffer by 7, so that the remaining bits are in the range 8-15
-        self.buf <<= 7;
+        // add seven to ensure we can write bits that may otherwise not
+        // be written since they do not make a full byte.
+
+        // (why did it take me soo many hours to figure this out :-( )
         self.bits_in_buffer += 7;
+
         self.flush_fast(out_buf);
     }
     /// Set everything to zero.
