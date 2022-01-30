@@ -1,6 +1,6 @@
 //! This module provides huffman encoding and decoding routines
 
-use std::io::{ Read};
+use std::io::Read;
 
 use crate::bitstream::BitStreamReader;
 pub use crate::constants::LIMIT;
@@ -291,7 +291,7 @@ fn decompress_huff_inner(
         stream5.get_position(),
         stream5.get_src_len()
     );
-    // everything is good, we won Mr Stark.
+    //everything is good, we won Mr Stark.
 }
 /// Read Huffman Compressed data from src and write into dest
 ///
@@ -300,6 +300,11 @@ fn decompress_huff_inner(
 /// is done , dest.len() will contain uncompressed data
 pub fn huff_decompress_4x<R: Read>(src: &mut R, dest: &mut Vec<u8>)
 {
+    // read block information
+    let mut block_info = [0];
+
+    src.read_exact(&mut block_info).unwrap();
+
     let mut length = [0, 0, 0, 0];
     // read the length
     src.read_exact(&mut length[0..3]).unwrap();
@@ -326,9 +331,8 @@ pub fn huff_decompress_4x<R: Read>(src: &mut R, dest: &mut Vec<u8>)
     {
         block_length = u32::from_le_bytes(length);
 
-        if dest.capacity() <= (block_length as usize + dest.len()) 
+        if dest.capacity() <= (block_length as usize + dest.len())
         {
-            
             dest.reserve(block_length as usize);
         }
         // read checksum
@@ -394,16 +398,18 @@ pub fn huff_decompress_4x<R: Read>(src: &mut R, dest: &mut Vec<u8>)
             // write to unintialized memory :)
             dest.get_mut(start..).unwrap(),
         );
-        // read the length for the next iteration
-        if src.read_exact(length.get_mut(0..3).unwrap()).is_err()
+
+        // top bit in block info indicates if block is the last
+        // block.
+        if (block_info[0] >> 7 & 1) == 1
         {
-            // if there is no more data, we can effectively say we are done
-            // no more streams.
-            //
-            // Although we should be able to indicate a last block using some bit in the
-            // spec
+            // end of block
             break;
         }
+        // not last block, pull in more bytes.
+        src.read_exact(&mut block_info).unwrap();
+        // read the length for the next iteration
+        src.read_exact(length.get_mut(0..3).unwrap()).unwrap();
     }
 }
 
