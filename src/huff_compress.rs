@@ -2,20 +2,26 @@
 //!
 //!  # Format
 //! 2.  block information (specific to each block)
-//!      0-24 bits - Total Block size.
+//!     1 byte- Block information
+//!         7th bit-> last block ?
+//!         6th bit -> verify checksum?
+//!
+//!      0-24 bits(3 bytes) - Total Block size.
+//!
 //!      3 bytes - Checksum (should probably use xxhash)
+//!
 //!      10 bytes jump table
-//!         2 bytes per jump table size.
-//!         Cannot go above 65536
+//!
+//!        2 bytes per jump table size.
+//!
+//!        Cannot go above 65536
 //!
 //!     11 bytes - Code lengths for symbols
 //!
 //!     n bytes - Sum of the code lengths give the total number of
 //!     symbols in ascending order.
-//!     1 byte 0x00
+//!
 //!     Actual bits for stream 1.
-//!
-//!
 //!
 use std::convert::TryInto;
 use std::io::{BufRead, Read, Write};
@@ -316,7 +322,9 @@ pub fn huff_compress_4x<R: Read + BufRead, W: Write>(src: &mut R, dest: &mut W)
     let (buf3, remainder) = remainder.split_at_mut(START + 200);
     let (buf4, buf5) = remainder.split_at_mut(START + 200);
 
-    loop
+    let mut is_last = false;
+
+    while !is_last
     {
         // chunk depending on how much data we read
         for src_chunk in src_buf[0..size].chunks(size)
@@ -347,7 +355,8 @@ pub fn huff_compress_4x<R: Read + BufRead, W: Write>(src: &mut R, dest: &mut W)
                 // encoding didn't work, (codes were assigned a longer distribution of lengths, probably
                 // a uniformly distributed data(limited-kraft doesn't like it )
                 // TODO: Print some stats
-                // emit as it is uncompressed
+                // emit as it is uncompressed?
+                // for uncompressed, we emit,
                 // panic.
             }
             else
@@ -435,8 +444,11 @@ pub fn huff_compress_4x<R: Read + BufRead, W: Write>(src: &mut R, dest: &mut W)
                          */
 
                         write_bits!(0, 5);
+
                         write_bits!(5, 10);
+
                         write_bits!(10, 15);
+
                         write_bits!(15, 20);
                     }
                 }
@@ -449,6 +461,21 @@ pub fn huff_compress_4x<R: Read + BufRead, W: Write>(src: &mut R, dest: &mut W)
                 }
                 // write headers
                 {
+                    if src.fill_buf().map(|b| b.is_empty()).unwrap()
+                    {
+                        // an empty buffer indicates stream has reached EOF
+                        // TODO: When I bump up msver should probably use src.has_bytes_left()
+                        // (when it becomes stable)
+
+                        is_last = true;
+                        // indicate block is the last block
+                        dest.write_all(&[1_u8 << 7]).unwrap();
+                    }
+                    else
+                    {
+                        // not the last block, just send a zero.
+                        dest.write_all(&[0]).unwrap();
+                    }
                     // total block size, in little endian
                     dest.write(&size.to_le_bytes()[0..3])
                         .expect("Could not write block size");
@@ -526,13 +553,8 @@ pub fn huff_compress_4x<R: Read + BufRead, W: Write>(src: &mut R, dest: &mut W)
         }
 
         // pull some more bits
+        // may end up reading 0 bytes, but is_last variable will be true and the loop will terminate
         size = src.read(&mut src_buf).unwrap();
-
-        if size == 0
-        {
-            // we're done
-            break;
-        }
     }
 }
 
@@ -552,7 +574,7 @@ fn huff_compress()
 
     let fd = OpenOptions::new()
         .read(true)
-        .open("/Users/calebe/git/FiniteStateEntropy/programs/enwiki.small")
+        .open("/Users/calebe/git/FiniteStateEntropy/programs/enwiki.smaller")
         .unwrap();
     let mut fd = BufReader::new(fd);
 
