@@ -1,6 +1,5 @@
 //! This module provides huffman encoding and decoding routines
 
-use std::fs::read;
 use std::io::Read;
 
 use crate::bitstream::BitStreamReader;
@@ -336,6 +335,27 @@ pub fn huff_decompress_4x<R: Read>(src: &mut R, dest: &mut Vec<u8>)
         {
             dest.reserve(block_length as usize);
         }
+        if (block_info[0] >> 6 & 1) == 1{
+            // block was uncompressed
+            // assert that the above reserve actually worked
+            // read to the dest buffer
+            unsafe{
+                // a variation of vec::extend
+                let old_len = dest.len();
+                let new_len = old_len+block_length as usize;
+                // SAFETY:
+                //  1. New len must be equal to or less than capacity -> confirmed by the assert
+                //     statement
+                //  2. Elements between old_len-new_len must be initialized -> Done straight after
+                //     setting up the new length.
+                assert!(dest.capacity()>= new_len,"Internal error, report to repo");
+
+                dest.set_len(new_len);
+                // read_exact guarantees it will fill up buf, if it doesn't it will panic,
+                // hence the guarrantees of the set len are met.
+                src.read_exact(&mut dest[old_len..new_len]).unwrap()
+            }
+        }
         // read checksum
         src.read_exact(&mut checksum).unwrap();
         // read jump table
@@ -387,8 +407,9 @@ pub fn huff_decompress_4x<R: Read>(src: &mut R, dest: &mut Vec<u8>)
         );
 
         // this is the laziest way to use uninitialized memory
-        // 1. We know decompress_huff_inner will write to the region
-        // between
+        // 1. We know decompress_huff_inner will write to the whole
+        // uninitialized region. (there is an assert up there to ensure it is)
+        // 2. The assert above ensures the new len is inside the capacity of the vector.
         unsafe { dest.set_len(new_len) };
 
         decompress_huff_inner(

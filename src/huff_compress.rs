@@ -4,7 +4,9 @@
 //! 2.  block information (specific to each block)
 //!     1 byte- Block information
 //!         7th bit-> last block ?
-//!         6th bit -> verify checksum?
+//!         6th bit -> Was this block compressed?
+//!
+//!         5th bit -> verify checksum?
 //!
 //!      0-24 bits(3 bytes) - Total Block size.
 //!
@@ -289,11 +291,13 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
 
     // |Chunk size| Speed       | Ratio    |
     // |----------|-------------|----------|
-    // |1 << 18   | 1.512 Gb/s  |  0.68197 |
-    // |1 << 17   | 1.464 Gb/s  |  0.67952 |
-    // |1 << 16   | 1.326 Gb/s  |  0.67715 |
+    // |1 << 18   | 1.541 Gb/s  |  0.68197 |
+    // |1 << 17   | 1.486 Gb/s  |  0.67952 |
+    // |1 << 16   | 1.378 Gb/s  |  0.67715 |
     // |1 << 15   | 1.248 Gb/s  |  0.67531 |
     //
+    // TODO: If this is changed, there is a hard error on test files
+    // investigate why
     const CHUNK_SIZE: usize = 1 << 17;
     // safety, if it goes above it can't be stored in the block.
     assert!(CHUNK_SIZE < 1 << 23);
@@ -357,9 +361,27 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
                 // encoding didn't work, (codes were assigned a longer distribution of lengths, probably
                 // a uniformly distributed data(limited-kraft doesn't like it )
                 // TODO: Print some stats
-                // emit as it is uncompressed?
-                // for uncompressed, we emit,
-                // panic.
+                // set bit as uncompressed
+                let mut info_bit = [0];
+                if end == src.len()
+                {
+                    // we reached the end,
+                    is_last = true;
+                    // indicate block is the last block
+                    info_bit[0] |= 1<<7;
+                    // indicate it's uncompressed
+                    info_bit[0] |= 1<<6;
+                }
+
+                // write info bit
+                dest.write_all(&info_bit).unwrap();
+                // total block size, in little endian
+                dest.write(&src_chunk.len().to_le_bytes()[0..3])
+                    .expect("Could not write block size");
+
+                // write as uncompressed
+                dest.write_all(&src).unwrap();
+
             }
             else
             {
@@ -563,7 +585,7 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
 fn huff_compress()
 {
     use std::fs::{OpenOptions,read};
-    use std::io::{BufReader, BufWriter};
+    use std::io::{ BufWriter};
 
     let fs = OpenOptions::new()
         .create(true)
