@@ -47,6 +47,26 @@ impl<'src> BitStreamReader<'src>
          *
          * Bits stored will never go above 63 and if bits are in the range 56-63 no refills occur.
          */
+        /*
+        * TODO: Is it better to use ctlz here?
+        *
+        * These are the benefits I can see:
+        *
+        * 1. We don't need to maintain bits_left variable(more available registers)
+        * 2. We save a sub instruction in the main loop(more available registers)
+        * 
+        * The problems on the other hand aren't good.
+        *  
+        * 1. Increased complexity at this refill stage
+        * 2. Requires me to switch to nightly to use unsafe lzcnt that is UB if 0(note can't be zero)
+        * 3. Count leading zeroes have a latency of 3 hence this might be a tad slower(and its in the serial dependency).
+        * 4. ILP in the inner loop favours sub instruction as it can execute in parallel.
+        * 5. When we want Count leading zeroes, we want to be in 64-bit,but in 64 bit, we don't spill to stack space(
+        *    I checked)
+        *
+        *
+        * But overall I'm open to suggestions
+        */
 
         let mut buf = [0; 8];
 
@@ -284,11 +304,11 @@ impl BitStreamWriter
     #[cold]
     pub unsafe fn flush_final(&mut self, out_buf: &mut [u8])
     {
-        // add seven to ensure we can write bits that may otherwise not
-        // be written since they do not make a full byte.
+
+        // align the bit buffer to a byte
 
         // (why did it take me soo many hours to figure this out :-( )
-        self.bits_in_buffer += 7;
+        self.bits_in_buffer +=  (-i16::from(self.bits_in_buffer) & 7) as u8;
 
         self.flush_fast(out_buf);
     }
