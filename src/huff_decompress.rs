@@ -1,5 +1,6 @@
 //! This module provides huffman encoding and decoding routines
 
+use std::fs::read;
 use std::io::Read;
 
 use crate::bitstream::BitStreamReader;
@@ -416,7 +417,7 @@ pub fn huff_decompress_4x<R: Read>(src: &mut R, dest: &mut Vec<u8>)
 #[test]
 fn huff_decompress()
 {
-    use std::fs::OpenOptions;
+    use std::fs::{OpenOptions,read};
     use std::io::{BufReader, BufWriter};
 
     use crate::huff_compress_4x;
@@ -429,13 +430,10 @@ fn huff_decompress()
             .unwrap();
         let mut fs = BufWriter::with_capacity(1 << 24, fs);
 
-        let fd = OpenOptions::new()
-            .read(true)
-            .open("/Users/calebe/git/FiniteStateEntropy/programs/enwiki.small")
+        let fd = read("/Users/calebe/git/FiniteStateEntropy/programs/enwiki.smaller")
             .unwrap();
-        let mut fd = BufReader::new(fd);
 
-        huff_compress_4x(&mut fd, &mut fs);
+        huff_compress_4x(&fd, &mut fs);
     }
     {
         let fs = OpenOptions::new()
