@@ -23,8 +23,9 @@
 //!
 //!     Actual bits for stream 1.
 //!
+use std::cmp::min;
 use std::convert::TryInto;
-use std::io::{BufRead, Read, Write};
+use std::io::Write;
 
 use crate::bitstream::BitStreamWriter;
 use crate::constants::LIMIT;
@@ -242,7 +243,7 @@ fn generate_codes(symbols: &mut [Symbols; 256], non_zero: usize) -> [u8; LIMIT]
 
 /// Compress a buffer `src` and store it into
 /// buffer `dest`
-pub fn huff_compress_4x<R: Read + BufRead, W: Write>(src: &mut R, dest: &mut W)
+pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
 {
     /*
      * Main code for compression.
@@ -297,11 +298,13 @@ pub fn huff_compress_4x<R: Read + BufRead, W: Write>(src: &mut R, dest: &mut W)
     // safety, if it goes above it can't be stored in the block.
     assert!(CHUNK_SIZE < 1 << 23);
 
-    let mut src_buf = vec![0; CHUNK_SIZE];
 
-    // size is how many bytes were actually read.
-    let mut size = src.read(&mut src_buf).unwrap();
+    // start is our current pointer to where we start compressing from
+    let mut start  = 0;
+    // end is our current pointer to where we stop compressing at
+    let mut end = min(CHUNK_SIZE,src.len());
 
+    let mut src_chunk = &src[start..end];
     // Initialize stream writers
     let mut stream1 = BitStreamWriter::new();
     let mut stream2 = BitStreamWriter::new();
@@ -326,15 +329,14 @@ pub fn huff_compress_4x<R: Read + BufRead, W: Write>(src: &mut R, dest: &mut W)
 
     while !is_last
     {
-        // chunk depending on how much data we read
-        for src_chunk in src_buf[0..size].chunks(size)
+
         {
             let start = (src_chunk.len() + 3) / 5;
             // 1. Count items in the buffer for histogram statistics
             let mut freq_counts = histogram(src_chunk);
 
             // length limit
-            limited_kraft(&mut freq_counts, size as u32);
+            limited_kraft(&mut freq_counts, src_chunk.len() as u32);
 
             //find first non-zero element
             let non_zero = freq_counts
@@ -344,13 +346,13 @@ pub fn huff_compress_4x<R: Read + BufRead, W: Write>(src: &mut R, dest: &mut W)
             let last_sym = freq_counts[non_zero];
 
             // iterate using code lengths times symbols to determine if it's useful to compress
-            let mut end = 0;
+            let mut compressed_ratio = 0;
 
             for code in &freq_counts[non_zero..]
             {
-                end += u32::from(code.code_length) * code.x;
+                compressed_ratio += u32::from(code.code_length) * code.x;
             }
-            if end - 4096 > (src_chunk.len() as u32 * (u8::BITS))
+            if compressed_ratio - 4096 > (src_chunk.len() as u32 * (u8::BITS))
             {
                 // encoding didn't work, (codes were assigned a longer distribution of lengths, probably
                 // a uniformly distributed data(limited-kraft doesn't like it )
@@ -461,12 +463,9 @@ pub fn huff_compress_4x<R: Read + BufRead, W: Write>(src: &mut R, dest: &mut W)
                 }
                 // write headers
                 {
-                    if src.fill_buf().map(|b| b.is_empty()).unwrap()
+                    if end == src.len()
                     {
-                        // an empty buffer indicates stream has reached EOF
-                        // TODO: When I bump up msver should probably use src.has_bytes_left()
-                        // (when it becomes stable)
-
+                       // we reached the end,
                         is_last = true;
                         // indicate block is the last block
                         dest.write_all(&[1_u8 << 7]).unwrap();
@@ -477,7 +476,7 @@ pub fn huff_compress_4x<R: Read + BufRead, W: Write>(src: &mut R, dest: &mut W)
                         dest.write_all(&[0]).unwrap();
                     }
                     // total block size, in little endian
-                    dest.write(&size.to_le_bytes()[0..3])
+                    dest.write(&src_chunk.len().to_le_bytes()[0..3])
                         .expect("Could not write block size");
                     // Todo, add checksum
                     dest.write_all(&[0, 0, 0])
@@ -551,17 +550,19 @@ pub fn huff_compress_4x<R: Read + BufRead, W: Write>(src: &mut R, dest: &mut W)
                 stream5.reset();
             }
         }
+        // read the next block
+        start=end;
+        // end increases either by chunk size or points to end of buffer.
+        end = min(end+CHUNK_SIZE,src.len());
 
-        // pull some more bits
-        // may end up reading 0 bytes, but is_last variable will be true and the loop will terminate
-        size = src.read(&mut src_buf).unwrap();
+        src_chunk = &src[start..end];
     }
 }
 
 #[test]
 fn huff_compress()
 {
-    use std::fs::OpenOptions;
+    use std::fs::{OpenOptions,read};
     use std::io::{BufReader, BufWriter};
 
     let fs = OpenOptions::new()
@@ -572,16 +573,13 @@ fn huff_compress()
         .unwrap();
     let mut fs = BufWriter::with_capacity(1 << 24, fs);
 
-    let fd = OpenOptions::new()
-        .read(true)
-        .open("/Users/calebe/git/FiniteStateEntropy/programs/enwiki.smaller")
-        .unwrap();
-    let mut fd = BufReader::new(fd);
+    let fd = read("/Users/calebe/git/FiniteStateEntropy/programs/enwiki.smaller").unwrap();
 
-    huff_compress_4x(&mut fd, &mut fs);
+
+    huff_compress_4x(&fd, &mut fs);
     println!(
         "{:?} {:?}",
         fs.get_ref().metadata().unwrap().len() as f64,
-        fd.get_ref().metadata().unwrap().len() as f64
+        fd.len() as f64
     );
 }
