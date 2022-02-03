@@ -1,3 +1,5 @@
+#![cfg(all(target_arch = "x86_64"))] // bmi support
+
 //! BMI optimized bitstream reader.
 //!
 //! This is an optimized BMI2 variant of a BitStream reader with
@@ -16,7 +18,8 @@ pub struct BmiBitStreamReader<'src>
     buffer: u64,
 }
 
-impl <'src> BmiBitStreamReader<'src> {
+impl<'src> BmiBitStreamReader<'src>
+{
     pub fn new(in_buffer: &'src [u8]) -> BmiBitStreamReader<'src>
     {
         BmiBitStreamReader {
@@ -25,11 +28,36 @@ impl <'src> BmiBitStreamReader<'src> {
             position: 0,
         }
     }
-    //#[cfg(target_feature = "lzcnt")]
-    pub unsafe fn refill(&mut self){
+
+    pub unsafe fn initial_refill(&mut self){
+        let mut buf = [0; 8];
+
+        std::ptr::copy_nonoverlapping(self.src.as_ptr().add(self.position), buf.as_mut_ptr(), 8);
+
+        // create a u64 from an array of u8's
+        let mut new_buffer = u64::from_le_bytes(buf);
+        // num indicates how many bytes we actually consumed.
+        // offset position
+        self.position += 7;
+
+        // have bits from 0..56
+        new_buffer &= (1<<56)-1;
+
+        // shift number of bits
+        self.buffer = new_buffer;
+        // add marker
+        self.buffer |= 1<<57;
+
+    }
+    #[target_feature(enable = "lzcnt")]
+    pub unsafe fn refill_fast(&mut self)
+    {
         // count leading zeroes
         // leading zeroes tell us how many empty bits we have
         let mut bits_consumed = self.buffer.leading_zeros();
+
+        // the number of full bytes we can read
+        self.position += (bits_consumed >> 3) as usize;
 
         let mut buf = [0; 8];
 
@@ -37,20 +65,17 @@ impl <'src> BmiBitStreamReader<'src> {
 
         // create a u64 from an array of u8's
         let mut new_buffer = u64::from_le_bytes(buf);
-        // the number of full bytes we can read
-        self.position += (bits_consumed >> 3) as usize;
-        // actual bits in the stream not consumed
-        let actual_bits = bits_consumed ^ 63;
-        // shift up so that we have new bits are added on top
-        // of the old bits
-        new_buffer<<=actual_bits;
-        let marker = 1<<(bits_consumed+1);
+
+        // toggle set bit
+        let marker = 1 << 63;
 
         // or old bits and new bits
-        self.buffer |= new_buffer;
-
+        self.buffer = new_buffer;
         // add the marker
         self.buffer |= marker;
+
+        self.buffer>>= bits_consumed & 7;
+
 
     }
     #[inline(always)]
@@ -59,12 +84,12 @@ impl <'src> BmiBitStreamReader<'src> {
         (self.buffer & ((1 << LOOKAHEAD) - 1)) as usize
     }
 
+    #[target_feature(enable = "bmi2")]
 
-    #[inline(always)]
-    #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))] // bmi support
-    pub fn decode_single(&mut self, dest: &mut u8, table: &[u16; (1 << LIMIT)])
+    pub unsafe fn decode_single(&mut self, dest: &mut u8, table: &[u16; (1 << LIMIT)])
     {
-        unsafe {
+        let entry = table[self.peek_bits::<LIMIT>()];
+       unsafe {
             use std::arch::asm;
 
             // keep values in register Rust.
@@ -78,6 +103,8 @@ impl <'src> BmiBitStreamReader<'src> {
 
             );
         }
+
+        *dest = (entry >>8) as u8;
     }
 
     // Check that we didn't read past our buffer
@@ -88,14 +115,15 @@ impl <'src> BmiBitStreamReader<'src> {
          * since we may overshoot so we need to account for the bytes
          */
 
-        self.position - ((self.buffer.leading_zeros() >> 3) as usize) == self.src.len()
+        //self.position - (((63^self.buffer.leading_zeros()) >> 3) as usize) == self.src.len()
+        true
     }
     /// Get current position of the inner buffer
     pub fn get_position(&self) -> usize
     {
         // take into account the bytes not consumed in the current
         // bitstream.
-        self.position - (usize::from((self.buffer.leading_zeros() >> 3) as usize))
+        self.position - (usize::from(((63^self.buffer.leading_zeros()) >> 3) as usize))
     }
     /// Get the length  of the inner buffer
     pub fn get_src_len(&self) -> usize
