@@ -3,10 +3,12 @@
 //!  # Format
 //! 2.  block information (specific to each block)
 //!     1 byte- Block information
-//!         7th bit-> last block ?
-//!         6th bit -> Was this block compressed?
+//!         Block information is in order, I.e you can't have an uncompressed
+//!         and RLE block at the same time
 //!
-//!         5th bit -> verify checksum?
+//!         7th bit-> last block ?
+//!         6th bit -> Uncompressed?
+//!         5th bit -> RLE?
 //!
 //!      0-24 bits(3 bytes) - Total Block size.
 //!
@@ -18,7 +20,10 @@
 //!
 //!        Cannot go above 65536
 //!
-//!     11 bytes - Code lengths for symbols
+//!     10 bytes - Code lengths for symbols
+//!              - There can be no symbol with code length 0 or 1
+//!                code_length[i] represents codes of length i+2,
+//!                so code_length[9] == codes of length 11
 //!
 //!     n bytes - Sum of the code lengths give the total number of
 //!     symbols in ascending order.
@@ -45,7 +50,7 @@ fn fast_log2(x: f32) -> f32
      * Some pretty good stuff.
      */
     let vx = x.to_bits();
-    let mx = (vx & 0x007FFFFF) | 0x3f000000;
+    let mx = (vx & 0x007F_FFFF) | 0x3f00_0000;
     let mx_f = f32::from_bits(mx);
 
     let mut y = vx as f32;
@@ -69,13 +74,14 @@ fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
      *
      */
     const INITIAL_THRESHOLD: f32 = 0.4375; // (28/64)
-    const STEP_THRESHOLD: f32 = 0.015625; // (1/64)
+
+    const STEP_THRESHOLD: f32 = 0.015_625; // (1/64)
+
+    const ONE: usize = 1 << LIMIT;
 
     let mut code_lengths = [0_u8; 256];
 
     let inv_hist_sum = 1.0 / (hist_sum as f32);
-
-    const ONE: usize = 1 << LIMIT;
 
     let mut fast_log: [f32; 256] = [0.0; 256];
 
@@ -98,7 +104,7 @@ fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
 
         code_lengths[i] = rounded;
 
-        histogram[i].code_length = rounded as u16;
+        histogram[i].code_length = u16::from(rounded);
 
         spent += ONE >> rounded;
     }
@@ -130,7 +136,7 @@ fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
             }
             let entropy = fast_log[i];
 
-            let diff = entropy - (*code_length as f32);
+            let diff = entropy - f32::from(*code_length);
 
             let dfs = diff - threshold;
 
@@ -144,7 +150,7 @@ fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
 
                 spent -= ONE >> (*code_length);
 
-                histogram[i].code_length = (*code_length) as u16;
+                histogram[i].code_length = u16::from(*code_length);
 
                 if spent <= ONE
                 {
@@ -196,7 +202,7 @@ fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
 
     histogram.sort_unstable_by(|a, b| a.code_length.cmp(&b.code_length));
 }
-fn generate_codes(symbols: &mut [Symbols; 256], non_zero: usize) -> [u8; LIMIT]
+fn generate_codes(symbols: &mut [Symbols; 256], non_zero: usize) -> [u8; LIMIT-1]
 {
     /*
      * Generate actual code lengths that will be used for encoding.
@@ -207,7 +213,7 @@ fn generate_codes(symbols: &mut [Symbols; 256], non_zero: usize) -> [u8; LIMIT]
      * argument points to the position of the first non-zero symbol
      */
 
-    let mut code_lengths = [0_u8; LIMIT];
+    let mut code_lengths = [0_u8; LIMIT-1];
 
     let mut current_size = symbols[0].code_length;
 
@@ -225,7 +231,7 @@ fn generate_codes(symbols: &mut [Symbols; 256], non_zero: usize) -> [u8; LIMIT]
 
         current_size = size;
 
-        code_lengths[usize::from(sym.code_length) - 1] += 1;
+        code_lengths[usize::from(sym.code_length) - 2] += 1;
 
         sym.x = code;
 
@@ -299,14 +305,16 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
     // TODO: If this is changed, there is a hard error on test files
     // investigate why
     const CHUNK_SIZE: usize = 1 << 17;
+
     // safety, if it goes above it can't be stored in the block.
     assert!(CHUNK_SIZE < 1 << 23);
 
+    const START: usize = (CHUNK_SIZE + 4) / 5;
 
     // start is our current pointer to where we start compressing from
-    let mut start  = 0;
+    let mut start = 0;
     // end is our current pointer to where we stop compressing at
-    let mut end = min(CHUNK_SIZE,src.len());
+    let mut end = min(CHUNK_SIZE, src.len());
 
     let mut src_chunk = &src[start..end];
     // Initialize stream writers
@@ -317,8 +325,6 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
     let mut stream5 = BitStreamWriter::new();
 
     let mut buf = vec![0; CHUNK_SIZE + 1000];
-
-    const START: usize = (CHUNK_SIZE + 4) / 5;
 
     // Initialize destination buffers.
     // out buffer should be in buffer / 5 + 200 bytes extra for padding
@@ -333,8 +339,9 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
 
     while !is_last
     {
-
         {
+            let mut info_bit = [0];
+
             let start = (src_chunk.len() + 3) / 5;
             // 1. Count items in the buffer for histogram statistics
             let mut freq_counts = histogram(src_chunk);
@@ -356,32 +363,46 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
             {
                 compressed_ratio += u32::from(code.code_length) * code.x;
             }
+
+            if end == src.len()
+            {
+                // we reached the end,
+                is_last = true;
+                // indicate block is the last block
+                info_bit[0] |= 1 << 7;
+            }
+
             if compressed_ratio - 4096 > (src_chunk.len() as u32 * (u8::BITS))
             {
                 // encoding didn't work, (codes were assigned a longer distribution of lengths, probably
                 // a uniformly distributed data(limited-kraft doesn't like it )
-                // TODO: Print some stats
                 // set bit as uncompressed
-                let mut info_bit = [0];
-                if end == src.len()
-                {
-                    // we reached the end,
-                    is_last = true;
-                    // indicate block is the last block
-                    info_bit[0] |= 1<<7;
-                    // indicate it's uncompressed
-                    info_bit[0] |= 1<<6;
-                }
+
+                // indicate it's uncompressed
+                info_bit[0] |= 1 << 6;
 
                 // write info bit
                 dest.write_all(&info_bit).unwrap();
                 // total block size, in little endian
-                dest.write(&src_chunk.len().to_le_bytes()[0..3])
+                dest.write_all(&src_chunk.len().to_le_bytes()[0..3])
                     .expect("Could not write block size");
 
                 // write as uncompressed
-                dest.write_all(&src).unwrap();
+                dest.write_all(src).unwrap();
+            }
+            else if last_sym.x == src_chunk.len() as u32
+            {
+                // RLE block
 
+                // Set 5'th bit to indicate this is an RLE block
+                info_bit[0] |= 1 << 5;
+                // write info bit
+                dest.write_all(&info_bit).unwrap();
+                // total block size, in little endian
+                dest.write_all(&src_chunk.len().to_le_bytes()[0..3])
+                    .expect("Could not write block size");
+                // write a single byte.
+                dest.write_all(&[src_chunk[0]]).unwrap();
             }
             else
             {
@@ -390,7 +411,7 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
                 // position 9.
                 let code_lengths = generate_codes(&mut freq_counts, non_zero);
 
-                let entries = freq_counts.map(|x| x.to_u32());
+                let entries = freq_counts.map(crate::utils::Symbols::to_u32);
 
                 // Initialize read buffers
                 let (src1, remainder) = src_chunk.split_at(start);
@@ -465,6 +486,8 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
                          * faster than where we write one bit with the streams
                          * fighting for writes , probably due to some micro-architectural issue
                          * I am yet to find.
+                         *
+                         *  -  I think it's cache  or too many unrolls
                          */
 
                         write_bits!(0, 5);
@@ -485,18 +508,7 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
                 }
                 // write headers
                 {
-                    if end == src.len()
-                    {
-                       // we reached the end,
-                        is_last = true;
-                        // indicate block is the last block
-                        dest.write_all(&[1_u8 << 7]).unwrap();
-                    }
-                    else
-                    {
-                        // not the last block, just send a zero.
-                        dest.write_all(&[0]).unwrap();
-                    }
+                    dest.write_all(&info_bit).unwrap();
                     // total block size, in little endian
                     dest.write(&src_chunk.len().to_le_bytes()[0..3])
                         .expect("Could not write block size");
@@ -573,9 +585,9 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
             }
         }
         // read the next block
-        start=end;
+        start = end;
         // end increases either by chunk size or points to end of buffer.
-        end = min(end+CHUNK_SIZE,src.len());
+        end = min(end + CHUNK_SIZE, src.len());
 
         src_chunk = &src[start..end];
     }
@@ -584,8 +596,8 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
 #[test]
 fn huff_compress()
 {
-    use std::fs::{OpenOptions,read};
-    use std::io::{ BufWriter};
+    use std::fs::{read, OpenOptions};
+    use std::io::BufWriter;
 
     let fs = OpenOptions::new()
         .create(true)
@@ -595,8 +607,7 @@ fn huff_compress()
         .unwrap();
     let mut fs = BufWriter::with_capacity(1 << 24, fs);
 
-    let fd = read("/Users/calebe/git/FiniteStateEntropy/programs/enwiki.smaller").unwrap();
-
+    let fd = vec![221; 10000];
 
     huff_compress_4x(&fd, &mut fs);
     println!(

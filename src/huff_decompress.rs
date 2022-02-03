@@ -335,92 +335,119 @@ pub fn huff_decompress_4x<R: Read>(src: &mut R, dest: &mut Vec<u8>)
         {
             dest.reserve(block_length as usize);
         }
-        if (block_info[0] >> 6 & 1) == 1{
+        if (block_info[0] >> 6) & 1 == 1
+        {
             // block was uncompressed
             // assert that the above reserve actually worked
             // read to the dest buffer
-            unsafe{
+            unsafe {
                 // a variation of vec::extend
                 let old_len = dest.len();
-                let new_len = old_len+block_length as usize;
+                let new_len = old_len + block_length as usize;
                 // SAFETY:
                 //  1. New len must be equal to or less than capacity -> confirmed by the assert
                 //     statement
                 //  2. Elements between old_len-new_len must be initialized -> Done straight after
                 //     setting up the new length.
-                assert!(dest.capacity()>= new_len,"Internal error, report to repo");
+                assert!(dest.capacity() >= new_len, "Internal error, report to repo");
 
                 dest.set_len(new_len);
                 // read_exact guarantees it will fill up buf, if it doesn't it will panic,
                 // hence the guarrantees of the set len are met.
-                src.read_exact(&mut dest[old_len..new_len]).unwrap()
+                src.read_exact(&mut dest[old_len..new_len]).unwrap();
             }
         }
-        // read checksum
-        src.read_exact(&mut checksum).unwrap();
-        // read jump table
-        src.read_exact(&mut jump_table).unwrap();
-
-        // two bytes per jump table, stored in little endian form.
-        let tbl1 = u32::from(jump_table[0]) + (u32::from(jump_table[1]) << 8);
-
-        let tbl2 = u32::from(jump_table[2]) + (u32::from(jump_table[3]) << 8) + tbl1;
-
-        let tbl3 = u32::from(jump_table[4]) + (u32::from(jump_table[5]) << 8) + tbl2;
-
-        let tbl4 = u32::from(jump_table[6]) + (u32::from(jump_table[7]) << 8) + tbl3;
-
-        // end of this stream.
-        let end = u32::from(jump_table[8]) + (u32::from(jump_table[9]) << 8) + tbl4;
-
-        let offsets = [tbl1, tbl2, tbl3, tbl4, end].map(|x| x as usize);
-
-        // read code lengths
-        src.read_exact(&mut code_lengths[1..]).unwrap();
-
-        let codes = code_lengths.iter().map(|x| *x as usize).sum::<usize>();
-        // read symbols
-        src.read_exact(&mut symbols[0..codes]).unwrap();
-
-        // Build the Huffman tree
-        build_tree(&mut tbl, &code_lengths, &symbols);
-
-        let huff_source = &mut source[0..end as usize];
-
-        src.read_exact(huff_source).unwrap();
-        // new length
-        let start = dest.len();
-
-        let new_len = dest.len() + block_length as usize;
-        // set length to be the capacity
-        if new_len > dest.capacity()
+        else if (block_info[0] >> 5) & 1 == 1
         {
-            let cap = dest.capacity();
-            dest.reserve(new_len - cap);
+            // RLE block
+            let mut rle = [0];
+            // read the byte
+            src.read_exact(&mut rle).unwrap();
+
+            let old_len = dest.len();
+            let new_len = old_len + block_length as usize;
+            // SAFETY:
+            //  1. New len must be equal to or less than capacity -> confirmed by the assert
+            //     statement
+            //  2. Elements between old_len-new_len must be initialized -> Done straight after
+            //     setting up the new length.
+            assert!(dest.capacity() >= new_len, "Internal error, report to repo");
+            unsafe {
+                dest.set_len(new_len);
+            }
+            // fill with rle
+            dest[old_len..new_len].fill(rle[0]);
+            // done
         }
-        // Don't continue if we don't have capacity to create a new write
-        assert!(
-            new_len <= dest.capacity(),
-            "{},{}",
-            new_len,
-            dest.capacity()
-        );
+        else
+        {
+            // compressed block.
 
-        // this is the laziest way to use uninitialized memory
-        // 1. We know decompress_huff_inner will write to the whole
-        // uninitialized region. (there is an assert up there to ensure it is)
-        // 2. The assert above ensures the new len is inside the capacity of the vector.
-        unsafe { dest.set_len(new_len) };
+            // read checksum
+            src.read_exact(&mut checksum).unwrap();
+            // read jump table
+            src.read_exact(&mut jump_table).unwrap();
 
-        decompress_huff_inner(
-            huff_source,
-            &tbl,
-            &offsets,
-            block_length as usize,
-            // write to unintialized memory :)
-            dest.get_mut(start..).unwrap(),
-        );
+            // two bytes per jump table, stored in little endian form.
+            let tbl1 = u32::from(jump_table[0]) + (u32::from(jump_table[1]) << 8);
 
+            let tbl2 = u32::from(jump_table[2]) + (u32::from(jump_table[3]) << 8) + tbl1;
+
+            let tbl3 = u32::from(jump_table[4]) + (u32::from(jump_table[5]) << 8) + tbl2;
+
+            let tbl4 = u32::from(jump_table[6]) + (u32::from(jump_table[7]) << 8) + tbl3;
+
+            // end of this stream.
+            let end = u32::from(jump_table[8]) + (u32::from(jump_table[9]) << 8) + tbl4;
+
+            let offsets = [tbl1, tbl2, tbl3, tbl4, end].map(|x| x as usize);
+
+            // read code lengths
+            src.read_exact(&mut code_lengths[2..]).unwrap();
+
+            let codes = code_lengths.iter().map(|x| *x as usize).sum::<usize>();
+            // read symbols
+            src.read_exact(&mut symbols[0..codes]).unwrap();
+
+            // Build the Huffman tree
+            build_tree(&mut tbl, &code_lengths, &symbols);
+
+            let huff_source = &mut source[0..end as usize];
+
+            src.read_exact(huff_source).unwrap();
+            // new length
+            let start = dest.len();
+
+            let new_len = dest.len() + block_length as usize;
+            // set length to be the capacity
+            if new_len > dest.capacity()
+            {
+                let cap = dest.capacity();
+                dest.reserve(new_len - cap);
+            }
+            // Don't continue if we don't have capacity to create a new write
+            assert!(
+                new_len <= dest.capacity(),
+                "{},{}",
+                new_len,
+                dest.capacity()
+            );
+
+            // this is the laziest way to use uninitialized memory
+            // 1. We know decompress_huff_inner will write to the whole
+            // uninitialized region. (there is an assert up there to ensure it is)
+            // 2. The assert above ensures the new len is inside the capacity of the vector.
+            unsafe { dest.set_len(new_len) };
+
+            decompress_huff_inner(
+                huff_source,
+                &tbl,
+                &offsets,
+                block_length as usize,
+                // write to uninitialized memory :)
+                dest.get_mut(start..).unwrap(),
+            );
+        }
         // top bit in block info indicates if block is the last
         // block.
         if (block_info[0] >> 7 & 1) == 1
@@ -438,7 +465,7 @@ pub fn huff_decompress_4x<R: Read>(src: &mut R, dest: &mut Vec<u8>)
 #[test]
 fn huff_decompress()
 {
-    use std::fs::{OpenOptions,read};
+    use std::fs::{read, OpenOptions};
     use std::io::{BufReader, BufWriter};
 
     use crate::huff_compress_4x;
@@ -451,8 +478,7 @@ fn huff_decompress()
             .unwrap();
         let mut fs = BufWriter::with_capacity(1 << 24, fs);
 
-        let fd = read("/Users/calebe/git/FiniteStateEntropy/programs/enwiki.smaller")
-            .unwrap();
+        let fd = read("/Users/calebe/git/FiniteStateEntropy/programs/enwiki.smaller").unwrap();
 
         huff_compress_4x(&fd, &mut fs);
     }
@@ -463,14 +489,14 @@ fn huff_decompress()
             .read(true)
             .open("/Users/calebe/CLionProjects/zcif/tests.zcif")
             .unwrap();
-        let mut fs = BufReader::with_capacity(1 << 24, fs);
+        let _fs = BufReader::with_capacity(1 << 24, fs);
 
         let fd = OpenOptions::new()
             .create(true)
             .write(true)
             .open("/Users/calebe/git/FiniteStateEntropy/programs/enwiki.xml")
             .unwrap();
-        let mut fd = BufWriter::new(fd);
+        let _fd = BufWriter::new(fd);
 
         //huff_decompress_4x(&mut fs, &mut fd);
     }
