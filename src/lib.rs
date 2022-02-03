@@ -10,6 +10,7 @@ mod bitstream;
 mod constants;
 mod huff_compress;
 mod huff_decompress;
+mod huff_decompress_bmi;
 mod io;
 mod utils;
 pub use huff_compress::huff_compress_4x;
