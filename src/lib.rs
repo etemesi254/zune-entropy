@@ -1,5 +1,11 @@
 #![allow(clippy::assertions_on_constants)]
-#![warn(clippy::perf)]
+#![warn(clippy::perf, clippy::pedantic, clippy::perf)]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::inline_always
+)]
+
 mod bitstream;
 mod constants;
 mod huff_compress;
