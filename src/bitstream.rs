@@ -4,6 +4,11 @@
 
 use crate::constants::LIMIT;
 
+pub mod bmi;
+
+#[cfg(all(target_arch = "x86_64",target_feature = "lzcnt",target_feature = "bmi2"))]
+use bmi::BmiBitStreamReader;
+
 pub struct BitStreamReader<'src>
 {
     // buffer from which we are pulling in bits from
@@ -64,8 +69,8 @@ impl<'src> BitStreamReader<'src>
         * 5. When we want Count leading zeroes, we want to be in 64-bit,but in 64 bit, we don't spill to stack space(
         *    I checked)
         *
-        *
-        * But overall I'm open to suggestions
+        * -> 6 it's SLOW on Arm, reduces speed by 200Mb/s idk why
+        *  TODO: Investigate on x86_64 
         */
 
         let mut buf = [0; 8];
@@ -75,7 +80,7 @@ impl<'src> BitStreamReader<'src>
         // create a u64 from an array of u8's
         let new_buffer = u64::from_le_bytes(buf);
         // num indicates how many bytes we actually consumed.
-        let num = 63 - self.bits_left;
+        let num = 63 ^ self.bits_left;
         // offset position
         self.position += (num >> 3) as usize;
         // shift number of bits
@@ -121,40 +126,7 @@ impl<'src> BitStreamReader<'src>
         // write to position
         *dest = (entry >> 8) as u8;
     }
-    #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
-    pub fn decode_single(&mut self, dest: &mut u8, table: &[u16; (1 << LIMIT)])
-    {
-        /*
-         * Generate better code for CPUs supporting BMI2,
-         * this is a compile time constraint and should be enabled via
-         * RUSTFLAGS ="-C target-features=+bmi2" cargo build --release to enable it.
-         *
-         * Performance difference is about 90 Mb/s(1100 Mb/s vs 1010 Mb/s) better compared to  the decode_single one
-         * (AMD Ryzen 3600U)
-         *
-         * The main issue is that Rust spills values to memory even when not needed.
-         * forcing use of asm tells Rust to keep them in registers and not memory,
-         */
-        let entry = table[(self.peek_bits::<LIMIT>())];
 
-        unsafe {
-            use std::arch::asm;
-
-            // keep values in register Rust.
-            asm!(
-                // shrx instruction uses the lower 0-6 bits of the last(entry:r) register, that's why ther
-                // is no explicit masking
-                 "shrx {buf}, {buf}, {entry:r}", // self.buf >>= (entry & 0xFF);
-                 "sub {bits_left},{entry:l}", // self.bits_left -= (entry & 0xFF);
-
-                buf= inout(reg) self.buffer,
-                entry = in(reg_abcd) entry,
-                bits_left = inout(reg_byte) self.bits_left,
-
-            );
-        }
-        *dest = (entry >> 8) as u8;
-    }
 
     // Check that we didn't read past our buffer
     pub fn check_final(&self) -> bool
