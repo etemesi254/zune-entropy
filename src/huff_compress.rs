@@ -200,9 +200,11 @@ fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
         }
     }
 
+    assert!(spent <= ONE);
+
     histogram.sort_unstable_by(|a, b| a.code_length.cmp(&b.code_length));
 }
-fn generate_codes(symbols: &mut [Symbols; 256], non_zero: usize) -> [u8; LIMIT-1]
+fn generate_codes(symbols: &mut [Symbols; 256], non_zero: usize) -> [u8; LIMIT - 1]
 {
     /*
      * Generate actual code lengths that will be used for encoding.
@@ -213,7 +215,7 @@ fn generate_codes(symbols: &mut [Symbols; 256], non_zero: usize) -> [u8; LIMIT-1
      * argument points to the position of the first non-zero symbol
      */
 
-    let mut code_lengths = [0_u8; LIMIT-1];
+    let mut code_lengths = [0_u8; LIMIT - 1];
 
     let mut current_size = symbols[0].code_length;
 
@@ -342,7 +344,7 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
         {
             let mut info_bit = [0];
 
-            let start = (src_chunk.len() + 3) / 5;
+            let start = (src_chunk.len() + 4) / 5;
             // 1. Count items in the buffer for histogram statistics
             let mut freq_counts = histogram(src_chunk);
 
