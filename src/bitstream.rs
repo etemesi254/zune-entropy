@@ -2,12 +2,9 @@
 //!
 //! This module provides an interface to read and write bits (and bytes)
 
-use crate::constants::LIMIT;
+use crate::constants::{LIMIT, TABLE_LOG, TABLE_SIZE};
 
-pub mod bmi;
-
-#[cfg(all(target_arch = "x86_64",target_feature = "lzcnt",target_feature = "bmi2"))]
-use bmi::BmiBitStreamReader;
+use crate::utils::Symbols;
 
 pub struct BitStreamReader<'src>
 {
@@ -53,25 +50,25 @@ impl<'src> BitStreamReader<'src>
          * Bits stored will never go above 63 and if bits are in the range 56-63 no refills occur.
          */
         /*
-        * TODO: Is it better to use ctlz here?
-        *
-        * These are the benefits I can see:
-        *
-        * 1. We don't need to maintain bits_left variable(more available registers)
-        * 2. We save a sub instruction in the main loop(more available registers)
-        * 
-        * The problems on the other hand aren't good.
-        *  
-        * 1. Increased complexity at this refill stage
-        * 2. Requires me to switch to nightly to use unsafe lzcnt that is UB if 0(note can't be zero)
-        * 3. Count leading zeroes have a latency of 3 hence this might be a tad slower(and its in the serial dependency).
-        * 4. ILP in the inner loop favours sub instruction as it can execute in parallel.
-        * 5. When we want Count leading zeroes, we want to be in 64-bit,but in 64 bit, we don't spill to stack space(
-        *    I checked)
-        *
-        * -> 6 it's SLOW on Arm, reduces speed by 200Mb/s idk why
-        *  TODO: Investigate on x86_64 
-        */
+         * TODO: Is it better to use ctlz here?
+         *
+         * These are the benefits I can see:
+         *
+         * 1. We don't need to maintain bits_left variable(more available registers)
+         * 2. We save a sub instruction in the main loop(more available registers)
+         *
+         * The problems on the other hand aren't good.
+         *
+         * 1. Increased complexity at this refill stage
+         * 2. Requires me to switch to nightly to use unsafe lzcnt that is UB if 0(note can't be zero)
+         * 3. Count leading zeroes have a latency of 3 hence this might be a tad slower(and its in the serial dependency).
+         * 4. ILP in the inner loop favours sub instruction as it can execute in parallel.
+         * 5. When we want Count leading zeroes, we want to be in 64-bit,but in 64 bit, we don't spill to stack space(
+         *    I checked)
+         *
+         * -> 6 it's SLOW on Arm, reduces speed by 200Mb/s idk why
+         *  TODO: Investigate on x86_64
+         */
 
         let mut buf = [0; 8];
 
@@ -127,7 +124,6 @@ impl<'src> BitStreamReader<'src>
         *dest = (entry >> 8) as u8;
     }
 
-
     // Check that we didn't read past our buffer
     pub fn check_final(&self) -> bool
     {
@@ -151,6 +147,10 @@ impl<'src> BitStreamReader<'src>
         self.src.len()
     }
 }
+
+const MASK: [u16; 17] = [
+    0, 1, 3, 7, 15, 31, 63, 127, 255, 511, 1023, 2047, 4095, 8191, 16383, 32767, 65535,
+];
 
 /// A compact bit writer for the Huffman encoding.
 /// algorithm.
@@ -204,7 +204,7 @@ impl BitStreamWriter
         }
     }
     #[inline(always)]
-    pub unsafe fn write_bits_fast(
+    pub unsafe fn encode_bits_huffman(
         &mut self, symbols: &[u8; 5], entry: &[u32; 256], out_buf: &mut [u8],
     )
     {
@@ -243,12 +243,37 @@ impl BitStreamWriter
         self.flush_fast(out_buf);
     }
 
+    #[inline(always)]
+    pub unsafe fn encode_bits_fse(
+        &mut self, symbol: u8, entries: &[Symbols; 256], next_states: &[u16; TABLE_SIZE],
+        curr_state: &mut u16,
+    )
+    {
+        let symbol = entries[usize::from(symbol)];
+
+        // TODO: Make num bits be determined by a state threshold like
+        // Cbloom FSE
+        // TODO:See if I can shift down with a power of two, to determine
+        // num_bits
+        let num_bits = (symbol.x + (*curr_state as u32)) >> TABLE_LOG;
+
+        // write bits
+        self.buf |= u64::from(*curr_state & *MASK.get_unchecked(num_bits as usize))
+            << self.bits_in_buffer;
+
+        self.bits_in_buffer += num_bits as u8;
+
+        // Determine next state
+        let offset = (*curr_state >> num_bits) as u16;
+
+        *curr_state = *next_states.get_unchecked((symbol.y + offset) as usize);
+    }
     /// Flush bits to the output buffer
     ///
     /// After calling this routine, the bit buffer is guaranteed
     /// to have less than 8 bits.
     #[inline(always)]
-    unsafe fn flush_fast(&mut self, out_buf: &mut [u8])
+    pub(crate) unsafe fn flush_fast(&mut self, out_buf: &mut [u8])
     {
         /*
         * Most of this is from Eric Biggers libdeflate
@@ -276,11 +301,10 @@ impl BitStreamWriter
     #[cold]
     pub unsafe fn flush_final(&mut self, out_buf: &mut [u8])
     {
-
         // align the bit buffer to a byte
 
         // (why did it take me soo many hours to figure this out :-( )
-        self.bits_in_buffer +=  (-i16::from(self.bits_in_buffer) & 7) as u8;
+        self.bits_in_buffer += (-i16::from(self.bits_in_buffer) & 7) as u8;
 
         self.flush_fast(out_buf);
     }
