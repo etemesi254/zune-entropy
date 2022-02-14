@@ -4,7 +4,6 @@ use std::io::Read;
 
 use crate::bitstream::BitStreamReader;
 pub use crate::constants::LIMIT;
-use crate::huff_decompress_bmi::decompress_huff_inner_bmi;
 use crate::utils::REVERSED_BITS;
 
 pub fn build_tree(table: &mut [u16; 1 << LIMIT], code_lengths: &[u8; LIMIT + 1], symbols: &[u8])
@@ -141,26 +140,26 @@ fn decompress_huff_inner(
                 ($index:tt) => {
                     stream1.decode_single(a.get_mut($index).unwrap(), entries);
 
-//                    stream2.decode_single(b.get_mut($index).unwrap(), entries);
+                    stream2.decode_single(b.get_mut($index).unwrap(), entries);
 
-  //                  stream3.decode_single(c.get_mut($index).unwrap(), entries);
+                    stream3.decode_single(c.get_mut($index).unwrap(), entries);
 
-    //                stream4.decode_single(d.get_mut($index).unwrap(), entries);
+                    stream4.decode_single(d.get_mut($index).unwrap(), entries);
 
-      //              stream5.decode_single(e.get_mut($index).unwrap(), entries);
+                    stream5.decode_single(e.get_mut($index).unwrap(), entries);
                 };
             }
             macro_rules! refill {
                 () => {
                     stream1.refill_fast();
 
-        //            stream2.refill_fast();
+                    stream2.refill_fast();
 
-          //          stream3.refill_fast();
+                    stream3.refill_fast();
 
-            //        stream4.refill_fast();
+                    stream4.refill_fast();
 
-              //      stream5.refill_fast();
+                    stream5.refill_fast();
                 };
             }
             refill!();
@@ -320,21 +319,13 @@ pub fn huff_decompress_4x<R: Read>(src: &mut R, dest: &mut Vec<u8>)
 
     let mut tbl = [0; 1 << LIMIT];
 
-    let mut checksum = [0; 3];
-
     let mut jump_table = [0; 10];
 
     let mut code_lengths = [0; 12];
 
     let mut symbols = [0; 256];
-    let mut bmi2_available = false;
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    {
-        if is_x86_feature_detected!("lzcnt") && is_x86_feature_detected!("bmi2")
-        {
-            bmi2_available = true;
-        }
-    }
+
+
 
     loop
     {
@@ -392,8 +383,6 @@ pub fn huff_decompress_4x<R: Read>(src: &mut R, dest: &mut Vec<u8>)
         {
             // compressed block.
 
-            // read checksum
-            src.read_exact(&mut checksum).unwrap();
             // read jump table
             src.read_exact(&mut jump_table).unwrap();
 
@@ -412,7 +401,7 @@ pub fn huff_decompress_4x<R: Read>(src: &mut R, dest: &mut Vec<u8>)
             let offsets = [tbl1, tbl2, tbl3, tbl4, end].map(|x| x as usize);
 
             // read code lengths
-            src.read_exact(&mut code_lengths[2..]).unwrap();
+            src.read_exact(&mut code_lengths[1..]).unwrap();
 
             let codes = code_lengths.iter().map(|x| *x as usize).sum::<usize>();
             // read symbols
@@ -447,32 +436,15 @@ pub fn huff_decompress_4x<R: Read>(src: &mut R, dest: &mut Vec<u8>)
             // uninitialized region. (there is an assert up there to ensure it is)
             // 2. The assert above ensures the new len is inside the capacity of the vector.
             unsafe { dest.set_len(new_len) };
-            if false
-            {
 
-                #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-                unsafe {
-                    decompress_huff_inner_bmi(
-                        huff_source,
-                        &tbl,
-                        &offsets,
-                        block_length as usize,
-                        // write to uninitialized memory :)
-                        dest.get_mut(start..).unwrap(),
-                    );
-                }
-            }
-            else
-            {
-                decompress_huff_inner(
-                    huff_source,
-                    &tbl,
-                    &offsets,
-                    block_length as usize,
-                    // write to uninitialized memory :)
-                    dest.get_mut(start..).unwrap(),
-                );
-            }
+            decompress_huff_inner(
+                huff_source,
+                &tbl,
+                &offsets,
+                block_length as usize,
+                // write to uninitialized memory :)
+                dest.get_mut(start..).unwrap(),
+            );
         }
         // top bit in block info indicates if block is the last
         // block.
