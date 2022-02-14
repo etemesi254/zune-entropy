@@ -8,12 +8,15 @@ pub const REVERSED_BITS: [u32; 1 << LIMIT] = reverse_bits();
 pub struct Symbols
 {
     pub symbol: u16,
-    /// At most uses 11 bits
-    pub code_length: u16,
+    /// Can represent two things
+    /// 1. Code lengths in huffman
+    /// 2. State counts in  FSE
+    pub y: u16,
 
     /// Can represent two things
     /// 1. Histogram count
-    /// 2. Actual code length.
+    /// 2. Actual Huffman code
+    /// 3. Code length in Huffman
     pub x: u32,
 }
 
@@ -26,8 +29,7 @@ impl Symbols
         //
         // 0-8: code length
         // 8-19: code
-        (REVERSED_BITS[self.x as usize] >> (16 - self.code_length)) << 8
-            | u32::from(self.code_length)
+        (REVERSED_BITS[self.x as usize] >> (16 - self.y)) << 8 | u32::from(self.y)
     }
 }
 
@@ -139,5 +141,5 @@ const fn reverse_bits() -> [u32; 1 << LIMIT]
 
         i += 1;
     }
-    return results;
+    results
 }
