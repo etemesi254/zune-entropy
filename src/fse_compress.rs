@@ -1,25 +1,45 @@
+//! FSE compression.
+//!
+//! Format
+//!  1 Byte information byte.
+//!     7th bit ->  Compression type (0-> Huffman , 1-> FSE)
+//!
+//!   3 bytes -> Block size
+//!   2 bytes -> Header size
+//!   n bytes -> Headers(sum of the above two bytes)
+//!
+//!   3 bytes -> Compressed block size.
+//!   n bytes -> Compressed data.
+//!
+//!
 use std::cmp::{max, min};
 use std::io::Write;
 
-use crate::bitstream::BitStreamWriter;
-use crate::constants::{MAX_TABLE_LOG, TABLE_LOG, TABLE_SIZE};
+use log::Level::Trace;
+use log::{log_enabled, trace};
+
+use crate::constants::{state_generator, MAX_TABLE_LOG, TABLE_LOG, TABLE_SIZE};
+use crate::fse_bitstream::FseStreamWriter;
+use crate::huff_bitstream::BitStreamWriter;
 use crate::utils::{histogram, Symbols};
-
-
 
 const CHUNK_SIZE: usize = 1 << 17;
 
+const SIZE: usize = 25;
+///
 /// Scale up or down frequency occurrences from histogramming to fit in to.
 /// fit into 2^TABLE_LOG(TABLE_SIZE). while ensuring every non-zero frequency gets a frequency
 /// >=1, even for low probability symbols
 ///
 /// ## Arguments
 ///- sym:  symbol results from histogramming.
-///   After this function completes, each non_zero symbol will have its allocated slots at
+///   After this function completes, each non zero symbol will have its allocated slots at
 ///   Symbols.y, hence this function modifies all y values of sym
-fn normalize_frequencies(sym: &mut [Symbols; 256], non_zero: usize, total: usize)
+fn normalize_frequencies_fast(sym: &mut [Symbols; 256], non_zero: usize, total: usize)
 {
-    const THRESH0LD: u16 = 4;
+    // If two values sym[x] and sym[x-1] are separated by THRESHOLD
+    // reduce sym[x] by (sym[x]-sym[x-1])/THRESHOLD.
+    const THRESH0LD: u16 = 16;
     // An upper limit on how many corrections we can go through.
     // if it goes above this, shorten the most common data values
     const RECURSION_LIMIT: usize = 30;
@@ -37,7 +57,10 @@ fn normalize_frequencies(sym: &mut [Symbols; 256], non_zero: usize, total: usize
             continue;
         }
 
-        sl.y = max((ratio * (sl.x as f32)).round() as u16, 1);
+        // the number of slots is given by symbol occurrence (sl.x)
+        // multiplied by the ratio(TABLE_SIZE/source length),rounded to the nearest number,
+        // every one rounded to zero should be rounded up to 1.
+        sl.y = max((ratio * (sl.x as f32)).floor() as u16, 1);
 
         summed_bits += sl.y;
     }
@@ -48,6 +71,7 @@ fn normalize_frequencies(sym: &mut [Symbols; 256], non_zero: usize, total: usize
 
         // give the largest symbol
         sym[255].y += (TABLE_SIZE) as u16 - summed_bits;
+
         summed_bits += (TABLE_SIZE) as u16 - summed_bits;
     }
     else if (summed_bits as usize) > TABLE_SIZE
@@ -80,7 +104,7 @@ fn normalize_frequencies(sym: &mut [Symbols; 256], non_zero: usize, total: usize
         let mut second = sym[index - 1];
 
         let mut first = sym.get_mut(index).unwrap();
-
+        trace!("Excess states:{}", excess_states);
         loop
         {
             if first.y == 1
@@ -90,9 +114,9 @@ fn normalize_frequencies(sym: &mut [Symbols; 256], non_zero: usize, total: usize
                 // reset index, and restart
                 index = 255;
 
-                second = sym[index - 1];
+                second = sym[254];
 
-                first = sym.get_mut(index).unwrap();
+                first = sym.get_mut(255).unwrap();
             }
 
             // ensure that this operation at least reduces a slot(the +1)
@@ -140,16 +164,22 @@ fn normalize_frequencies(sym: &mut [Symbols; 256], non_zero: usize, total: usize
             }
         }
     }
-    assert_eq!(summed_bits as usize, TABLE_SIZE)
+    assert_eq!(summed_bits as usize, TABLE_SIZE);
 }
+
 /// Allocate bits for each non zero frequency in the state
 ///
-/// ## Modifies
+/// # Modifies
 /// This modifies the value `x` of every non zero frequency counts
 /// storing a value that allows us to branchlessly determine if we are using
 /// max_bits or max_bits-1
 ///
-fn generate_state_bits(freq_counts: &mut [Symbols; 256], non_zero: usize)
+/// # Returns
+/// A number indicating how compressible this block is
+/// This number  divided by the total block size will give the compression
+/// ratio of the current block(in float). But since divisions are expensive,
+/// you can simply subtract from a certain threshold to see if this block can be compressed,
+fn generate_state_bits(freq_counts: &mut [Symbols; 256], non_zero: usize) -> u32
 {
     /*
      * Generate max_bits for every non-zero frequency in freq_counts
@@ -178,11 +208,11 @@ fn generate_state_bits(freq_counts: &mut [Symbols; 256], non_zero: usize)
      * us to branchlessly determine if we are using max_bits or max_bits-1
      */
 
-    // TODO: Add next state stuff. before I forget.
-    // Now I'm just cleaning the junk.
+    let mut compressibility = 0;
 
     for sym in &mut freq_counts[non_zero..].iter_mut()
     {
+        let hist = sym.x;
         // y contains actual slots
         // x -> histogram
         // replace histogram(x) with actual bits
@@ -192,9 +222,9 @@ fn generate_state_bits(freq_counts: &mut [Symbols; 256], non_zero: usize)
             #[cfg(not(target_feature = "lzcnt"))]
             {
                 // the |1 is because bsr instruction has undefined behaviour when src is zero.
-                // so we have to ensure it's never zero for Rust to generate a better code length
-                // the or doesn't affect anything since all items are greater than 1, and we only care about
-                // the top bit.
+                // so we have to ensure it's never zero for Rust to generate a better code.
+                // the or doesn't affect anything since all items are greater than or equal to 1,
+                // and we only care about the top bit.
                 sym.x = (TABLE_LOG as u32) - (u16::BITS - (sym.y | 1).leading_zeros()) + 1;
             }
             #[cfg(target_feature = "lzcnt")]
@@ -208,15 +238,19 @@ fn generate_state_bits(freq_counts: &mut [Symbols; 256], non_zero: usize)
             // everyone else defines leading zeroes correctly
             sym.x = (TABLE_LOG as u32) - (u16::BITS - (sym.y).leading_zeros()) + 1;
         }
+
         // store a value that allows us to determine if we are using max_bits or max_bits-1 bits
-        // format
+
         // Remember
         // sym.y <- slots allocated to this symbol
         // sym.x <- max_bits
 
         //BUG: If slots exceeds 1<<(TABLE_LOG-1), this panics, fix that.
-        sym.x = (sym.x << TABLE_LOG) - (u32::from(sym.y) << (sym.x));
+        compressibility += sym.x * hist;
+        sym.x = (sym.x << TABLE_LOG) - (((sym.y) as u32) << (sym.x));
     }
+
+    return compressibility;
 }
 /// Generate a pseudo state which we will use to spread symbols
 ///
@@ -236,19 +270,24 @@ fn generate_state_bits(freq_counts: &mut [Symbols; 256], non_zero: usize)
 /// you want ABCABCABABC kinda state,  so we need a good strategy for symbol spread,
 /// there are many techniques, sorting, precise symbol spread and a lot of other techniques
 /// but this lazy state generator is actually good.
-fn state_generator(num_states: usize) -> usize
+
+fn spread_symbols(freq_counts: &mut [Symbols; 256]) -> ([u16; TABLE_SIZE], [i32; 256])
 {
-    // play with this
-    // Changing this , make sure compression ratio changes
-    return (num_states >> 1) | (num_states >> 3) | 3;
-}
-fn spread_symbols(freq_counts: &mut [Symbols; 256]) -> [u16; 1 << TABLE_LOG]
-{
+    /*
+     * Ps you can store cumulative counts and build a decoding table
+     * from there
+     * Should I do that?
+     */
+    // the start and the end of each state
+    const INITIAL_STATE: usize = 0;
+
     let state_gen = state_generator(TABLE_SIZE);
 
+    // if state is even,slots distribution won't work
     assert_eq!(state_gen & 1, 1, "State cannot be an even number");
 
-    let mut state = 0;
+    let mut state = INITIAL_STATE;
+
     let mut state_array = [0; TABLE_SIZE];
 
     // This table contains all previous cumulative state counts
@@ -257,21 +296,28 @@ fn spread_symbols(freq_counts: &mut [Symbols; 256]) -> [u16; 1 << TABLE_LOG]
 
     let mut c_count = 0;
 
-    for sym in freq_counts.iter()
+    let mut next_state_offset = [0; 256];
+
+    for sym in freq_counts.iter_mut()
     {
         if sym.y == 0
         {
             continue;
         }
+        // TODO-> Give symbols with a single probability closer to state
+
         /*
-         * Allocate state to symbols
+         * In the spread symbols, we allocated states to symbols, now we want to do the opposite,
+         * allocate symbols to states
          */
 
-        let symbol = sym.symbol;
+        let symbol = sym.z;
 
-        cumulative_state_counts[usize::from(symbol)] = c_count;
+        cumulative_state_counts[((symbol) as usize)] = c_count;
 
         let mut count = sym.y;
+
+        next_state_offset[(sym.z) as usize] += i32::from(c_count) - i32::from(count);
 
         c_count += count;
 
@@ -284,14 +330,15 @@ fn spread_symbols(freq_counts: &mut [Symbols; 256]) -> [u16; 1 << TABLE_LOG]
             count -= 1;
         }
     }
+
     // Cumulative count should be equal to table size
     assert_eq!(
         c_count as usize, TABLE_SIZE,
         "Cumulative count is not equal to table size, internal error"
     );
 
-    // state must be zero at this point, since its a cyclic state, otherwise we messed up
-    assert_eq!(state, 0, "Internal error, state is not zero");
+    // state must be equal to the initial state, since its a cyclic state, otherwise we messed up
+    assert_eq!(state, INITIAL_STATE, "Internal error, state is not zero");
 
     /*
      * Build next_state[].  This array maps symbol occurrences in the
@@ -303,7 +350,7 @@ fn spread_symbols(freq_counts: &mut [Symbols; 256]) -> [u16; 1 << TABLE_LOG]
 
     for i in 0..TABLE_SIZE
     {
-        let symbol = usize::from(state_array[i]);
+        let symbol = (state_array[i]) as usize;
 
         let pos = cumulative_state_counts[symbol];
 
@@ -311,81 +358,227 @@ fn spread_symbols(freq_counts: &mut [Symbols; 256]) -> [u16; 1 << TABLE_LOG]
 
         cumulative_state_counts[symbol] += 1;
     }
+    return (next_state, next_state_offset);
+}
+/// Write headers, packing symbols and their state counts
+/// into a bitstream format
+///
+/// The format is
+/// |symbol| -> 8 bits
+/// |State counts| -> TABLE_LOG bits
+fn write_headers<W: Write>(
+    symbols: &[Symbols; 256], non_zero: usize, block_size: usize, last_block: bool, dest: &mut W,
+)
+{
+    /*
+     * Okay we have a header problem
+     * what do we need to re-construct next_state?
+     *
+     * Well we need to know how many slots each symbol was given
+     * and what symbol it was
+     * So what to do?
+     * okay let's try to give it the following construction
+     *
+     *
+     * | symbol | slot |
+     * But we know symbol is between 0..255
+     * and slot is between 0..TABLE_SIZE
+     * so we can use a bit-packing convention
+     * slot occupies 0..TABLE_LOG bits.
+     * and  the symbol occupies the top bits after TABLE_LOG.
+     *
+     * Since we are doing bit-io lets pack them into the following
+     *
+     * symbol => 8 bits
+     * slots => TABLE_LOG bits
+     *
+     * with this scheme, we can fit 2 symbols+slots before we flush
+     * to output buffer, so let's do that.
+     */
 
-    return next_state;
+    let info_bit = 1 << 7 | u8::from(last_block) << 6;
+
+    let chunks = symbols[non_zero..].chunks_exact(2);
+
+    let remainder = chunks.remainder();
+    // we can determine the size of the output buffer.
+    // each symbol + state occupies 18 bits.
+    // so output == (symbol * 2 bytes)+2 bits for each symbol.
+    // So overallocate
+    let mut output = vec![0_u8; (255 - non_zero) * 4];
+
+    let mut stream = BitStreamWriter::new(&mut output);
+
+    let (mut symbol, mut state);
+    for chunk in chunks
+    {
+        symbol = chunk[0].z as u64;
+        state = chunk[0].y as u64;
+
+        stream.add_bits(symbol, u8::BITS as u8);
+        stream.add_bits(state, TABLE_LOG as u8);
+
+        symbol = chunk[1].z as u64;
+        state = chunk[1].y as u64;
+
+        stream.add_bits(symbol, u8::BITS as u8);
+        stream.add_bits(state, TABLE_LOG as u8);
+
+        unsafe {
+            stream.flush_fast();
+        }
+    }
+    for chunk in remainder
+    {
+        symbol = chunk.z as u64;
+        state = chunk.y as u64;
+
+        stream.add_bits(symbol, u8::BITS as u8);
+        stream.add_bits(state, TABLE_LOG as u8);
+        unsafe {
+            stream.flush_fast();
+        }
+    }
+    unsafe {
+        stream.flush_final();
+    }
+    // two bytes Little endian, indicate this header size
+    let header_size = stream.get_position();
+
+    trace!("tANS Header size: {} bytes", header_size);
+    // write info bit
+    dest.write_all(&[info_bit]).unwrap();
+    // write block size
+    dest.write_all(&block_size.to_le_bytes()[0..3]).unwrap();
+    // header size
+    dest.write_all(&header_size.to_le_bytes()[0..2]).unwrap();
+    // write number of symbols
+    dest.write_all(&[255 - (non_zero - 1) as u8]).unwrap();
+
+    dest.write_all(stream.get_output()).unwrap();
 }
 
 fn encode_symbols<W: Write>(
-    src: &[u8], symbols: &[Symbols; 256], next_states: &[u16; TABLE_SIZE], buf: &mut [u8],
-    dest: &mut W,
+    src: &[u8], common_symbol: i16, symbols: &mut [Symbols; 256], next_states: &[u16; TABLE_SIZE],
+    next_states_offset: &[i32; 256], buf: &mut [u8], dest: &mut W,
 )
 {
+    /*
+     * The one thing to keep in mind is that how different this is from Huffman encoding
+     * in tANS/FSE interleaving is done by adding a new state variable
+     * while in Huffman, we use different streams with chains in
+     *
+     * So another good question is why is MAX_TABLE_LOG 11?
+     *
+     * It's a performance choice.
+     *
+     * That's how we get an edge on FSE.
+     * With 11 states and 5 interleaved streams, we have a maximum
+     * of 55 bits to be written and our bit-buffer can hold 63 bits max.
+     * A flush operation can leave at most 7 bits so we cannot write past (63-7)
+     * = 55 bits branchlessly.
+     * And 11*5 streams gives the minimum instruction/symbol.
+     *
+     *
+     * What about a buffer not aligned to multiple of 5?
+     * Fill it with the most common symbol, we can do with additional symbols
+     * and it allows for a clean decoder loop.
+     */
 
-    let mut stream = BitStreamWriter::new();
+    // place next_state inside symbol definition
+    symbols
+        .iter_mut()
+        .enumerate()
+        .for_each(|(pos, x)| x.z = next_states_offset[pos] as i16);
 
     let c = TABLE_SIZE as u16;
 
-    const SIZE:usize = 25;
-
     // states for each interleaved streams
+    // (5 states)
     let (mut c1, mut c2, mut c3, mut c4, mut c5) = (c, c, c, c, c);
 
-    // chunk into
-    for chunk in src.chunks_exact(SIZE)
+    let mut stream = FseStreamWriter::new(buf);
+    macro_rules! encode_slice {
+        ($start:tt,$chunk:tt) => {
+            stream.encode_symbol($chunk[$start + 0], symbols, next_states, &mut c1);
+
+            stream.encode_symbol($chunk[$start + 1], symbols, next_states, &mut c2);
+
+            stream.encode_symbol($chunk[$start + 2], symbols, next_states, &mut c3);
+
+            stream.encode_symbol($chunk[$start + 3], symbols, next_states, &mut c4);
+
+            stream.encode_symbol($chunk[$start + 4], symbols, next_states, &mut c5);
+
+            stream.flush_fast();
+        };
+    }
+
+    for chunk in src.rchunks_exact(SIZE)
     {
-        macro_rules! encode_slice {
-            ($start:tt) => {
-                stream.encode_bits_fse(
-                    chunk[$start].try_into().unwrap(),
-                    symbols,
-                    next_states,
-                    &mut c1,
-                );
-
-                stream.encode_bits_fse(
-                    chunk[$start+1].try_into().unwrap(),
-                    symbols,
-                    next_states,
-                    &mut c2,
-                );
-
-                stream.encode_bits_fse(
-                    chunk[$start+2].try_into().unwrap(),
-                    symbols,
-                    next_states,
-                    &mut c3,
-                );
-
-                stream.encode_bits_fse(
-                    chunk[$start+3].try_into().unwrap(),
-                    symbols,
-                    next_states,
-                    &mut c4,
-                );
-
-                stream.encode_bits_fse(
-                    chunk[$start+4].try_into().unwrap(),
-                    symbols,
-                    next_states,
-                    &mut c5,
-                );
-
-            stream.flush_fast(buf);
-            };
-        }
+        // do some unrolling
         unsafe {
-            encode_slice!(0);
-            encode_slice!(5);
-            encode_slice!(10);
-            encode_slice!(15);
-            encode_slice!(20);
-
+            encode_slice!(0, chunk);
+            encode_slice!(5, chunk);
+            encode_slice!(10, chunk);
+            encode_slice!(15, chunk);
+            encode_slice!(20, chunk);
         }
     }
 
-    dest.write_all(&buf[0..stream.get_position()])
+    {
+        // deal with symbols that were left over
+        // (not divisible by SIZE)
+
+        let rem_chunks = src.rchunks_exact(SIZE).remainder();
+
+        let mut start = 5 - (rem_chunks.len() % 5);
+        if start == 5
+        {
+            // if chunk is divisible by 5, don't add 5 dummy zeros
+            start = 0
+        }
+        // duplicate  the common symbol
+        let mut new_loc = vec![common_symbol as u8; rem_chunks.len() + start];
+
+        new_loc[0..rem_chunks.len()].copy_from_slice(rem_chunks);
+
+        // do the final encoding.
+        for chunk in new_loc.rchunks_exact(5)
+        {
+            unsafe {
+                encode_slice!(0, chunk);
+            };
+        }
+    }
+
+    stream.flush_final();
+
+    // you may think it's over, but that is where you go wrong
+    // we need to write the final state values
+
+    stream.encode_final_states(c1, c2, c3, c4, c5);
+
+    // write size of this block
+    dest.write_all(&stream.get_position().to_le_bytes()[0..3])
+        .unwrap();
+
+    dest.write_all(stream.get_output())
         .expect("Failed to write to destination buffer");
+
+    // Logging information
+    if log_enabled!(Trace)
+    {
+        trace!("Size of original block: {}", src.len());
+        trace!("Size of compressed block: {}", stream.get_position());
+        trace!(
+            "Ratio :{:.6}",
+            (stream.get_position() as f32) / (src.len() as f32)
+        );
+        println!();
+    }
 }
+
 pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W)
 {
     /*
@@ -394,7 +587,7 @@ pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W)
      * 1.  Histogram
      * 2.  Normalize counts
      * 3.  Create Compression table
-     * 4. Compress using  table.
+     * 4.  Compress using table.
      *
      * -----------------------------------------------------------
      * 1. Histogramming.
@@ -414,7 +607,10 @@ pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W)
      *
      */
     // asserts-> all are static
+
     assert!(TABLE_LOG <= MAX_TABLE_LOG);
+    // A lot of invariants won't work if this isn't obeyed
+    assert!(TABLE_SIZE.is_power_of_two());
 
     let mut is_last = false;
 
@@ -426,6 +622,7 @@ pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W)
     let mut src_chunk = &src[start..end];
 
     let mut buf = vec![0; CHUNK_SIZE + 10];
+
     while !is_last
     {
         /*
@@ -442,21 +639,44 @@ pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W)
         let non_zero = freq_counts.iter().position(|x| x.x != 0).unwrap_or(0);
 
         // normalize frequencies.
-        normalize_frequencies(&mut freq_counts, non_zero, src_chunk.len());
+        normalize_frequencies_fast(&mut freq_counts, non_zero, src_chunk.len());
 
         // Generate actual bit codes for the states for symbols.
-        generate_state_bits(&mut freq_counts, non_zero);
-        // spread symbols
+        // Do also the equivalent of detecting if this block is compressible.
+        // returning how many bytes will be shaved off when we compress
+        let _compressibility = generate_state_bits(&mut freq_counts, non_zero);
 
-        let mut new_counts = [Symbols::default(); 256];
+        //  if compressibility + THRESH0LD > src.len() as u32
+        //{
 
-        for i in freq_counts
+        //  println!("not compressible,{:?},{:?}",compressibility,src.len());
+        //}
+        //else
         {
-            new_counts[i.symbol as usize] = i;
-        }
-        let next_states = spread_symbols(&mut new_counts);
+            let mut new_counts = [Symbols::default(); 256];
 
-        encode_symbols(src_chunk, &new_counts, &next_states, &mut buf, dest);
+            // undo the sorting the earlier one did
+            for i in freq_counts
+            {
+                new_counts[i.z as usize] = i;
+            }
+            // write headers expects sorted symbols
+            write_headers(&freq_counts, non_zero, src_chunk.len(), is_last, dest);
+
+            let common_symbol = freq_counts[255].z;
+            // spread symbols, generating next_state also
+            // spread symbols requires symbols arranged in alphabetical order
+            // to generate cumulative frequency
+            //
+            let (next_states, next_states_offset) = spread_symbols(&mut new_counts);
+
+            #[rustfmt::skip]
+                encode_symbols(
+                src_chunk, common_symbol,
+                &mut new_counts, &next_states,
+                &next_states_offset,
+                &mut buf, dest);
+        }
 
         // read the next block
         start = end;
@@ -481,7 +701,7 @@ fn fse_compress_test()
         .unwrap();
     let mut fs = BufWriter::with_capacity(1 << 24, fs);
 
-    let fd = read("/Users/calebe/Projects/Data/enwiki.smaller").unwrap();
+    let fd = read("/Users/calebe/Projects/Data/COPYING").unwrap();
 
     fse_compress(&fd, &mut fs);
 }
