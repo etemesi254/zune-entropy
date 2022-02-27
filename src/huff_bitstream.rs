@@ -1,10 +1,9 @@
 //! BitStreamReader API
 //!
-//! This module provides an interface to read and write bits (and bytes)
+//! This module provides an interface to read and write bits (and bytes) for
+//! huffman
 
 use crate::constants::{LIMIT, TABLE_LOG, TABLE_SIZE};
-
-use crate::utils::Symbols;
 
 pub struct BitStreamReader<'src>
 {
@@ -42,32 +41,8 @@ impl<'src> BitStreamReader<'src>
     {
         /*
          * The refill always guarantees refills between 56-63
-         * This version is a modification of Variant 4 (tho I had come up with
-         * A similar but not so optimal method) found in Fabian's Giesen
-         * Reading bits in far too many ways.
-         * @ https://fgiesen.wordpress.com/2018/02/20/reading-bits-in-far-too-many-ways-part-2/
          *
          * Bits stored will never go above 63 and if bits are in the range 56-63 no refills occur.
-         */
-        /*
-         * TODO: Is it better to use ctlz here?
-         *
-         * These are the benefits I can see:
-         *
-         * 1. We don't need to maintain bits_left variable(more available registers)
-         * 2. We save a sub instruction in the main loop(more available registers)
-         *
-         * The problems on the other hand aren't good.
-         *
-         * 1. Increased complexity at this refill stage
-         * 2. Requires me to switch to nightly to use unsafe lzcnt that is UB if 0(note can't be zero)
-         * 3. Count leading zeroes have a latency of 3 hence this might be a tad slower(and its in the serial dependency).
-         * 4. ILP in the inner loop favours sub instruction as it can execute in parallel.
-         * 5. When we want Count leading zeroes, we want to be in 64-bit,but in 64 bit, we don't spill to stack space(
-         *    I checked)
-         *
-         * -> 6 it's SLOW on Arm, reduces speed by 200Mb/s idk why
-         *  TODO: Investigate on x86_64
          */
 
         let mut buf = [0; 8];
@@ -123,6 +98,18 @@ impl<'src> BitStreamReader<'src>
         // write to position
         *dest = (entry >> 8) as u8;
     }
+    pub fn get_bits(&mut self, num_bits: u8) -> u64
+    {
+        let mask = (1_u64 << num_bits) - 1;
+
+        let value = self.buffer & mask;
+
+        self.buffer >>= num_bits;
+
+        self.bits_left -= num_bits;
+
+        return value;
+    }
 
     // Check that we didn't read past our buffer
     pub fn check_final(&self) -> bool
@@ -148,34 +135,33 @@ impl<'src> BitStreamReader<'src>
     }
 }
 
-const MASK: [u16; 17] = [
-    0, 1, 3, 7, 15, 31, 63, 127, 255, 511, 1023, 2047, 4095, 8191, 16383, 32767, 65535,
-];
-
 /// A compact bit writer for the Huffman encoding.
 /// algorithm.
-pub struct BitStreamWriter
+pub struct BitStreamWriter<'dest>
 {
     // Number of actual bits in the bit buffer.
-    bits_in_buffer: u8,
+    bits: u8,
     // should I use usize?
     buf: u64,
     // position to write this in the output buffer
     position: usize,
+    // dest
+    dest: &'dest mut [u8],
 }
 
-impl BitStreamWriter
+impl<'dest> BitStreamWriter<'dest>
 {
-    pub fn new() -> BitStreamWriter
+    pub fn new(dest: &mut [u8]) -> BitStreamWriter
     {
         BitStreamWriter {
             buf: 0,
-            bits_in_buffer: 0,
+            bits: 0,
             position: 0,
+            dest,
         }
     }
     /// Deal with initial bits which can't be handled by the fast path.
-    pub fn write_bits_slow(&mut self, symbols: &[u8], entries: &[u32; 256], out_buf: &mut [u8])
+    pub fn write_bits_slow(&mut self, symbols: &[u8], entries: &[u32; 256])
     {
         let mut flush_bit = 0;
 
@@ -183,10 +169,7 @@ impl BitStreamWriter
         {
             let entry = entries[usize::from(*symbol)];
 
-            // add to the top bits
-            self.buf |= u64::from(entry >> 8) << self.bits_in_buffer;
-
-            self.bits_in_buffer += (entry & 0xFF) as u8;
+            self.add_bits(u64::from(entry >> 8), (entry & 0xFF) as u8);
 
             flush_bit += 1;
 
@@ -194,26 +177,29 @@ impl BitStreamWriter
             {
                 flush_bit = 0;
                 unsafe {
-                    self.flush_fast(out_buf);
+                    self.flush_fast();
                 }
             }
         }
         // flush any left
         unsafe {
-            self.flush_fast(out_buf);
+            self.flush_fast();
         }
     }
+    /// Add new bits into the bit buffer variable
     #[inline(always)]
-    pub unsafe fn encode_bits_huffman(
-        &mut self, symbols: &[u8; 5], entry: &[u32; 256], out_buf: &mut [u8],
-    )
+    pub fn add_bits(&mut self, value: u64, nbits: u8)
+    {
+        self.buf |= u64::from(value) << self.bits;
+
+        self.bits += nbits;
+    }
+    #[inline(always)]
+    pub unsafe fn encode_symbols(&mut self, symbols: &[u8; 5], entry: &[u32; 256])
     {
         /*
-         *The limit is 11 bits per symbol, therefore we can go
+         * The limit is 11 bits per symbol, therefore we can go
          * to 5 symbols per encode (55) before flushing.
-         *
-         * The bits are added in a fifo manner with the bits representing the first
-         * symbol
          *
          */
         macro_rules! encode_single {
@@ -221,14 +207,10 @@ impl BitStreamWriter
                 let entry = entry[symbols[$pos] as usize];
 
                 // add to the top bits
-                self.buf |= (u64::from(entry >> 8) << self.bits_in_buffer);
-
-                self.bits_in_buffer += (entry & 0xFF) as u8;
+                self.add_bits(u64::from(entry >> 8), (entry & 0xFF) as u8)
             };
         }
-        // TODO: Benchmarks report faster speeds when using
-        // movzxd than when using the earlier shift and get, benchmark
-        // on linux to see.
+
         encode_single!(0);
 
         encode_single!(1);
@@ -240,83 +222,54 @@ impl BitStreamWriter
         encode_single!(4);
 
         // flush to output buffer
-        self.flush_fast(out_buf);
-    }
-
-    #[inline(always)]
-    pub unsafe fn encode_bits_fse(
-        &mut self, symbol: u8, entries: &[Symbols; 256], next_states: &[u16; TABLE_SIZE],
-        curr_state: &mut u16,
-    )
-    {
-        let symbol = entries[usize::from(symbol)];
-
-        // TODO: Make num bits be determined by a state threshold like
-        // Cbloom FSE
-        // TODO:See if I can shift down with a power of two, to determine
-        // num_bits
-        let num_bits = (symbol.x + (*curr_state as u32)) >> TABLE_LOG;
-
-        // write bits
-        self.buf |= u64::from(*curr_state & *MASK.get_unchecked(num_bits as usize))
-            << self.bits_in_buffer;
-
-        self.bits_in_buffer += num_bits as u8;
-
-        // Determine next state
-        let offset = (*curr_state >> num_bits) as u16;
-
-        *curr_state = *next_states.get_unchecked((symbol.y + offset) as usize);
+        self.flush_fast();
     }
     /// Flush bits to the output buffer
     ///
     /// After calling this routine, the bit buffer is guaranteed
     /// to have less than 8 bits.
     #[inline(always)]
-    pub(crate) unsafe fn flush_fast(&mut self, out_buf: &mut [u8])
+    pub(crate) unsafe fn flush_fast(&mut self)
     {
-        /*
-        * Most of this is from Eric Biggers libdeflate
-        * @ https://github.com/ebiggers/libdeflate/blob/master/lib/deflate_compress.c
-        *
-        * Which has some nice properties , branchless writes high ILP etc etc.
-
-        */
-
         let buf = self.buf.to_le_bytes();
         // write 8 bytes
-        out_buf
+        self.dest
             .as_mut_ptr()
             .add(self.position)
             .copy_from(buf.as_ptr(), 8);
         // but update position to point to the full number of symbols we read
-        let bytes_written = self.bits_in_buffer & 56;
+        let bytes_written = self.bits & 56;
+
         // remove those bits we wrote.
         self.buf >>= bytes_written;
         // increment position
         self.position += (bytes_written >> 3) as usize;
 
-        self.bits_in_buffer &= 7;
+        self.bits &= 7;
     }
+
     #[cold]
-    pub unsafe fn flush_final(&mut self, out_buf: &mut [u8])
+    pub unsafe fn flush_final(&mut self)
     {
-        // align the bit buffer to a byte
+        let diff = (-i16::from(self.bits) & 7) as u8;
 
-        // (why did it take me soo many hours to figure this out :-( )
-        self.bits_in_buffer += (-i16::from(self.bits_in_buffer) & 7) as u8;
+        self.bits += diff;
 
-        self.flush_fast(out_buf);
+        self.flush_fast();
     }
     /// Set everything to zero.
     pub fn reset(&mut self)
     {
-        self.bits_in_buffer = 0;
+        self.bits = 0;
         self.buf = 0;
         self.position = 0;
     }
     pub fn get_position(&self) -> usize
     {
         self.position
+    }
+    pub fn get_output(&self) -> &[u8]
+    {
+        &self.dest[0..self.position]
     }
 }
