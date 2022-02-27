@@ -7,7 +7,9 @@ pub const REVERSED_BITS: [u32; 1 << LIMIT] = reverse_bits();
 #[derive(Copy, Clone, Default, Debug)]
 pub struct Symbols
 {
-    pub symbol: u16,
+    // Symbol in Huffman
+    // Next state in FSE
+    pub z: i16,
     /// Can represent two things
     /// 1. Code lengths in huffman
     /// 2. State counts in  FSE
@@ -29,7 +31,7 @@ impl Symbols
         //
         // 0-8: code length
         // 8-19: code
-        (REVERSED_BITS[self.x as usize] >> (16 - self.y)) << 8 | u32::from(self.y)
+        (REVERSED_BITS[self.x as usize] >> (16 - self.y)) << 8 | (self.y) as u32
     }
 }
 
@@ -101,7 +103,7 @@ pub fn histogram(data: &[u8]) -> [Symbols; 256]
     {
         a.x += b + c + d + e;
 
-        a.symbol = i as u16;
+        a.z = i as i16;
     }
 
     val
