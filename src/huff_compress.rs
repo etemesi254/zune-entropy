@@ -1,41 +1,58 @@
 //! Huffman Compression algorithm
 //!
 //!  # Format
-//! 2.  block information (specific to each block)
-//!     1 byte- Block information
-//!         Block information is in order, I.e you can't have an uncompressed
-//!         and RLE block at the same time
+//! 2.  Block information (specific to each block)
 //!
-//!         7th bit-> last block ?
-//!         6th bit -> Uncompressed?
-//!         5th bit -> RLE?
+//!- 1 byte - Block information
+//! Block information is in order, I.e you can't have an uncompressed
+//! and RLE block at the same time
+//!     - 7th bit -> Huffman or FSE( 0-> Huffman, 1-> FSE).
+//!     - 6th bit-> last block ?
+//!     - 5th bit -> Uncompressed?
+//!     - 4th bit -> RLE?
 //!
-//!      0-24 bits(3 bytes) - Total Block size.
 //!
-//!      10 bytes jump table
+//! - 3 bytes - Total Block size.(Little Endian).
 //!
-//!        2 bytes per jump table size.
+//! - 10 bytes jump table (Little Endian)
 //!
-//!        Cannot go above 65536(each jump table)
+//!     2 bytes per jump table size.
 //!
-//!     10 bytes - Code lengths for symbols
-//!              - There can be no symbol with code length 0 or 1
-//!                code_length[i] represents codes of length i+2,
-//!                so code_length[9] == codes of length 11
+//!     Cannot go above 65536(each jump table)
 //!
-//!     n bytes - Sum of the code lengths give the total number of
+//!- 10 bytes - Code lengths for symbols
+//!  - There can be no symbol with code length 0
+//!    code_length\[i\] represents codes of length i+1,
+//!    so code_length\[9\] == codes of length 11
+//!
+//!- n bytes - Sum of the code lengths give the total number of
 //!     symbols in ascending order.
+//! - Maximum amount of huffman header is 266 bytes(10 for code lengths, 255 for codes)
 //!
-//!     Actual bits for stream 1.
+//! Actual compressed data for stream 1.
+//!
+//! # 3. Huffman Compressed notes
+//! Huffman bit-streams are written in Little Endian order and are bit-reversed.
+//!
+//! The headers are arranged in MSB order and their canonical code length (see generate_code) are
+//! bit-reversed both by the encoder and the decoder(Bit reversal code is found in utils.rs just a large
+//! array)
+//! Do note that we might not compress data if it doesn't make sense to compress it
+//! This is handled transparently and requires no effect from the calling function
+//!
+//! More on the library inner workings are found on huff_compress
 //!
 use std::cmp::min;
 use std::convert::TryInto;
 use std::io::Write;
 
-use crate::bitstream::BitStreamWriter;
 use crate::constants::{LIMIT, SMALL_CHUNK_SIZE};
+use crate::huff_bitstream::BitStreamWriter;
 use crate::utils::{histogram, Symbols};
 
+const CHUNK_SIZE: usize = 1 << 17;
+
+/// Fast log2 approximation
 fn fast_log2(x: f32) -> f32
 {
     /*
@@ -166,7 +183,7 @@ fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
         {
             // make zero_offset true so that on
             // the inner loop, we can reset
-            // offset once it's use.
+            // offset once it's used.
             zero_offset = true;
         }
 
@@ -229,7 +246,7 @@ fn generate_codes(symbols: &mut [Symbols; 256], non_zero: usize) -> [u8; LIMIT]
 
         current_size = size;
 
-        code_lengths[usize::from(sym.y) - 1] += 1;
+        code_lengths[((sym.y) as usize) - 1] += 1;
 
         sym.x = code;
 
@@ -240,16 +257,177 @@ fn generate_codes(symbols: &mut [Symbols; 256], non_zero: usize) -> [u8; LIMIT]
     // put symbols in the right position.
     for sym in symbols.iter()
     {
-        sym_new[(sym.symbol & 255) as usize] = *sym;
+        sym_new[(sym.z & 255) as usize] = *sym;
     }
     *symbols = sym_new;
 
     code_lengths
 }
+/// Encode symbols for the Huffman Stream
+fn encode_symbols<W: Write>(
+    buf: &mut [u8], src_chunk: &[u8], entries: &[u32; 256], dest: &mut W, info_bit: u8,
+    freq_counts: &mut [Symbols; 256], non_zero: usize, code_lengths: [u8; 11], last_sym: Symbols,
+)
+{
+    const START: usize = (CHUNK_SIZE + 4) / 5;
 
+    let start = (src_chunk.len() + 4) / 5;
+
+    // Initialize destination buffers.
+    // out buffer should be in buffer / 5 + 200 bytes extra for padding
+    // use one large table +200 bytes(each get 200 bytes). and split into four smaller ones
+    // allows the base pointer to be stored in a single register in x86
+    let (buf1, remainder) = buf.split_at_mut(START);
+    let (buf2, remainder) = remainder.split_at_mut(START);
+    let (buf3, remainder) = remainder.split_at_mut(START);
+    let (buf4, buf5) = remainder.split_at_mut(START);
+
+    // Initialize stream writers
+    let mut stream1 = BitStreamWriter::new(buf1);
+    let mut stream2 = BitStreamWriter::new(buf2);
+    let mut stream3 = BitStreamWriter::new(buf3);
+    let mut stream4 = BitStreamWriter::new(buf4);
+    let mut stream5 = BitStreamWriter::new(buf5);
+
+    let (src1, remainder) = src_chunk.split_at(start);
+
+    let (src2, remainder) = remainder.split_at(start);
+
+    let (src3, remainder) = remainder.split_at(start);
+
+    let (src4, src5) = remainder.split_at(start);
+    // deal with symbols until all are aligned.
+    let start1 = src1.len() % SMALL_CHUNK_SIZE;
+
+    let start2 = src2.len() % SMALL_CHUNK_SIZE;
+
+    let start3 = src3.len() % SMALL_CHUNK_SIZE;
+
+    let start4 = src4.len() % SMALL_CHUNK_SIZE;
+
+    let start5 = src5.len() % SMALL_CHUNK_SIZE;
+
+    // write until all chunks are aligned to a 25 character boundary
+    stream1.write_bits_slow(&src1[0..start1], &entries);
+
+    stream2.write_bits_slow(&src2[0..start2], &entries);
+
+    stream3.write_bits_slow(&src3[0..start3], &entries);
+
+    stream4.write_bits_slow(&src4[0..start4], &entries);
+
+    stream5.write_bits_slow(&src5[0..start5], &entries);
+
+    // now chunks are aligned to 25, no need to check for remainders because they won't be there
+    for ((((chunk1, chunk2), chunk3), chunk4), chunk5) in src1[start1..]
+        .chunks_exact(SMALL_CHUNK_SIZE)
+        .zip(src2[start2..].chunks_exact(SMALL_CHUNK_SIZE))
+        .zip(src3[start3..].chunks_exact(SMALL_CHUNK_SIZE))
+        .zip(src4[start4..].chunks_exact(SMALL_CHUNK_SIZE))
+        .zip(src5[start5..].chunks_exact(SMALL_CHUNK_SIZE))
+    {
+        unsafe {
+            macro_rules! write_bits {
+                ($start:tt,$end:tt) => {
+                    stream1.encode_symbols(chunk1[$start..$end].try_into().unwrap(), &entries);
+
+                    stream2.encode_symbols(chunk2[$start..$end].try_into().unwrap(), &entries);
+
+                    stream3.encode_symbols(chunk3[$start..$end].try_into().unwrap(), &entries);
+
+                    stream4.encode_symbols(chunk4[$start..$end].try_into().unwrap(), &entries);
+
+                    stream5.encode_symbols(chunk5[$start..$end].try_into().unwrap(), &entries);
+                };
+            }
+
+            write_bits!(0, 5);
+
+            write_bits!(5, 10);
+
+            write_bits!(10, 15);
+
+            write_bits!(15, 20);
+        }
+    }
+    unsafe {
+        stream1.flush_final();
+        stream2.flush_final();
+        stream3.flush_final();
+        stream4.flush_final();
+        stream5.flush_final();
+    }
+    // write headers
+    {
+        dest.write_all(&[info_bit]).unwrap();
+        // total block size, in little endian
+        dest.write(&src_chunk.len().to_le_bytes()[0..3])
+            .expect("Could not write block size");
+
+        // add jump tables ->10 bytes
+        dest.write_all(&stream1.get_position().to_le_bytes()[0..2])
+            .expect("Could not write jump table info");
+
+        dest.write_all(&stream2.get_position().to_le_bytes()[0..2])
+            .expect("Could not write jump table info");
+
+        dest.write_all(&stream3.get_position().to_le_bytes()[0..2])
+            .expect("Could not write jump table info");
+
+        dest.write_all(&stream4.get_position().to_le_bytes()[0..2])
+            .expect("Could not write jump table info");
+
+        dest.write_all(&stream5.get_position().to_le_bytes()[0..2])
+            .expect("Could not write jump table info");
+        // code lengths
+        dest.write_all(&code_lengths)
+            .expect("Could not write code lengths to buffer");
+
+        // sort again  by codes this time.
+        freq_counts.sort_unstable_by(|a, b| a.x.cmp(&b.x));
+        let sum = code_lengths.iter().map(|x| *x as usize).sum::<usize>();
+
+        // insert the last symbol, it was assigned a code length of 0000 hence the sort messed it up
+        freq_counts[non_zero] = last_sym;
+
+        // so now we have a bunch of non-zeroes, we know how many they were since we have a variable
+        // pointing to the start of it
+        let mut symbols = [0; 256];
+
+        for (sym, pos) in freq_counts[non_zero..].iter().zip(symbols.iter_mut())
+        {
+            *pos = (sym.z & 255) as u8;
+        }
+        // write symbols
+        dest.write_all(&symbols[0..sum])
+            .expect("Could not write symbols to destination buffer");
+    }
+
+    // write data
+    // These serve two purpose
+    // 1. Write data
+    // 2. Check for data that is overwritten
+    //      -> The encode_symbols may write to the next stream position(since we use one large vector
+    //          and subdivide it into smaller chunks) stream 1 may overwrite to stream2
+    //          position which corrupts stream 2 data.
+    dest.write_all(stream1.get_output())
+        .expect("Failed to write to destination buffer");
+
+    dest.write_all(stream2.get_output())
+        .expect("Failed to write to destination buffer");
+
+    dest.write_all(stream3.get_output())
+        .expect("Failed to write to destination buffer");
+
+    dest.write_all(stream4.get_output())
+        .expect("Failed to write to destination buffer");
+
+    dest.write_all(stream5.get_output())
+        .expect("Failed to write to destination buffer");
+}
 /// Compress a buffer `src` and store it into
 /// buffer `dest`
-pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
+pub fn huff_compress<W: Write>(src: &[u8], dest: &mut W)
 {
     /*
      * Main code for compression.
@@ -305,7 +483,8 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
     // summary 323 mb enwiki file (head  -n 4000000 ./enwiki > enwiki.small)
     //
     // Machine
-    // MacBook-Pro.local 21.2.0 Darwin Kernel Version 21.2.0: Sun Nov 28 20:29:10 PST 2021; root:xnu-8019.61.5~1/RELEASE_ARM64_T8101 arm64
+    // MacBook-Pro.local 21.2.0 Darwin Kernel Version 21.2.0: Sun Nov 28 20:29:10 PST 2021;
+    // root:xnu-8019.61.5~1/RELEASE_ARM64_T8101 arm64
 
     // |Chunk size| Speed       | Ratio    |
     // |----------|-------------|----------|
@@ -328,12 +507,9 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
 
     // TODO: If this is changed(e.g 1<<19), there is a hard error on test files
     // investigate why
-    const CHUNK_SIZE: usize = 1 << 17;
 
     // safety, if it goes above it can't be stored in the block.
     assert!(CHUNK_SIZE < 1 << 23);
-
-    const START: usize = (CHUNK_SIZE + 4) / 5;
 
     // start is our current pointer to where we start compressing from
     let mut start = 0;
@@ -342,22 +518,8 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
 
     let mut src_chunk = &src[start..end];
     // Initialize stream writers
-    let mut stream1 = BitStreamWriter::new();
-    let mut stream2 = BitStreamWriter::new();
-    let mut stream3 = BitStreamWriter::new();
-    let mut stream4 = BitStreamWriter::new();
-    let mut stream5 = BitStreamWriter::new();
 
     let mut buf = vec![0; CHUNK_SIZE + 10];
-
-    // Initialize destination buffers.
-    // out buffer should be in buffer / 5 + 200 bytes extra for padding
-    // use one large table +200 bytes(each get 200 bytes). and split into four smaller ones
-
-    let (buf1, remainder) = buf.split_at_mut(START);
-    let (buf2, remainder) = remainder.split_at_mut(START);
-    let (buf3, remainder) = remainder.split_at_mut(START);
-    let (buf4, buf5) = remainder.split_at_mut(START);
 
     let mut is_last = false;
 
@@ -366,14 +528,13 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
         {
             let mut info_bit = [0];
 
-            let start = (src_chunk.len() + 4) / 5;
             // 1. Count items in the buffer for histogram statistics
             let mut freq_counts = histogram(src_chunk);
 
             // length limit
             limited_kraft(&mut freq_counts, src_chunk.len() as u32);
 
-            //find first non-zero element
+            // find first non-zero element
             let non_zero = freq_counts.iter().position(|x| x.y != 0).unwrap_or(0);
             let last_sym = freq_counts[non_zero];
 
@@ -382,24 +543,24 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
 
             for code in &freq_counts[non_zero..]
             {
-                compressed_ratio += u32::from(code.y) * code.x;
+                compressed_ratio += ((code.y) as u32) * code.x;
             }
             if end == src.len()
             {
                 // we reached the end,
                 is_last = true;
                 // indicate block is the last block
-                info_bit[0] |= 1 << 7;
+                info_bit[0] |= 1 << 6;
             }
 
             if compressed_ratio - 4096 > (src_chunk.len() as u32 * (u8::BITS))
             {
                 // encoding didn't work, (codes were assigned a longer distribution of lengths, probably
-                // a uniformly distributed data(limited-kraft doesn't like it )
+                // incompressible data.
                 // set bit as uncompressed
 
                 // indicate it's uncompressed
-                info_bit[0] |= 1 << 6;
+                info_bit[0] |= 1 << 5;
 
                 // write info bit
                 dest.write_all(&info_bit).unwrap();
@@ -414,8 +575,8 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
             {
                 // RLE block
 
-                // Set 5'th bit to indicate this is an RLE block
-                info_bit[0] |= 1 << 5;
+                // Set 4'th bit to indicate this is an RLE block
+                info_bit[0] |= 1 << 4;
                 // write info bit
                 dest.write_all(&info_bit).unwrap();
                 // total block size, in little endian
@@ -434,171 +595,17 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
                 let entries = freq_counts.map(crate::utils::Symbols::to_u32);
 
                 // Initialize read buffers
-                let (src1, remainder) = src_chunk.split_at(start);
-
-                let (src2, remainder) = remainder.split_at(start);
-
-                let (src3, remainder) = remainder.split_at(start);
-
-                let (src4, src5) = remainder.split_at(start);
-                // deal with symbols until all are aligned.
-                let start1 = src1.len() % SMALL_CHUNK_SIZE;
-
-                let start2 = src2.len() % SMALL_CHUNK_SIZE;
-
-                let start3 = src3.len() % SMALL_CHUNK_SIZE;
-
-                let start4 = src4.len() % SMALL_CHUNK_SIZE;
-
-                let start5 = src5.len() % SMALL_CHUNK_SIZE;
-
-                // write until all chunks are aligned to a 25 character boundary
-                stream1.write_bits_slow(&src1[0..start1], &entries, buf1);
-
-                stream2.write_bits_slow(&src2[0..start2], &entries, buf2);
-
-                stream3.write_bits_slow(&src3[0..start3], &entries, buf3);
-
-                stream4.write_bits_slow(&src4[0..start4], &entries, buf4);
-
-                stream5.write_bits_slow(&src5[0..start5], &entries, buf5);
-
-                // now chunks are aligned to 25, no need to check for remainders because they won't be there
-                for ((((chunk1, chunk2), chunk3), chunk4), chunk5) in src1[start1..]
-                    .chunks_exact(SMALL_CHUNK_SIZE)
-                    .zip(src2[start2..].chunks_exact(SMALL_CHUNK_SIZE))
-                    .zip(src3[start3..].chunks_exact(SMALL_CHUNK_SIZE))
-                    .zip(src4[start4..].chunks_exact(SMALL_CHUNK_SIZE))
-                    .zip(src5[start5..].chunks_exact(SMALL_CHUNK_SIZE))
-                {
-                    unsafe {
-                        macro_rules! write_bits {
-                            ($start:tt,$end:tt) => {
-                                stream1.encode_bits_huffman(
-                                    chunk1[$start..$end].try_into().unwrap(),
-                                    &entries,
-                                    buf1,
-                                );
-                                stream2.encode_bits_huffman(
-                                    chunk2[$start..$end].try_into().unwrap(),
-                                    &entries,
-                                    buf2,
-                                );
-                                stream3.encode_bits_huffman(
-                                    chunk3[$start..$end].try_into().unwrap(),
-                                    &entries,
-                                    buf3,
-                                );
-                                stream4.encode_bits_huffman(
-                                    chunk4[$start..$end].try_into().unwrap(),
-                                    &entries,
-                                    buf4,
-                                );
-                                stream5.encode_bits_huffman(
-                                    chunk5[$start..$end].try_into().unwrap(),
-                                    &entries,
-                                    buf5,
-                                );
-                            };
-                        }
-                        /*
-                         * This version where each writes 5 bytes ia noticeably
-                         * faster than where we write one bit with the streams
-                         * fighting for writes , probably due to some micro-architectural issue
-                         * I am yet to find.
-                         *
-                         *  -  I think it's cache  or too many unrolls
-                         */
-
-                        write_bits!(0, 5);
-
-                        write_bits!(5, 10);
-
-                        write_bits!(10, 15);
-
-                        write_bits!(15, 20);
-                    }
-                }
-                unsafe {
-                    stream1.flush_final(buf1);
-                    stream2.flush_final(buf2);
-                    stream3.flush_final(buf3);
-                    stream4.flush_final(buf4);
-                    stream5.flush_final(buf5);
-                }
-                // write headers
-                {
-                    dest.write_all(&info_bit).unwrap();
-                    // total block size, in little endian
-                    dest.write(&src_chunk.len().to_le_bytes()[0..3])
-                        .expect("Could not write block size");
-
-                    // add jump tables
-                    // 10 Bytes
-                    dest.write_all(&stream1.get_position().to_le_bytes()[0..2])
-                        .expect("Could not write jump table info");
-
-                    dest.write_all(&stream2.get_position().to_le_bytes()[0..2])
-                        .expect("Could not write jump table info");
-
-                    dest.write_all(&stream3.get_position().to_le_bytes()[0..2])
-                        .expect("Could not write jump table info");
-
-                    dest.write_all(&stream4.get_position().to_le_bytes()[0..2])
-                        .expect("Could not write jump table info");
-
-                    dest.write_all(&stream5.get_position().to_le_bytes()[0..2])
-                        .expect("Could not write jump table info");
-                    // code lengths
-                    dest.write_all(&code_lengths)
-                        .expect("Could not write code lengths to buffer");
-
-                    // sort again  by codes this time.
-                    freq_counts.sort_unstable_by(|a, b| a.x.cmp(&b.x));
-                    let sum = code_lengths.iter().map(|x| *x as usize).sum::<usize>();
-
-                    // insert the last symbol, it was assigned a code length of 0000 hence the sort messed it up
-                    freq_counts[non_zero] = last_sym;
-
-                    // so now we have a bunch of non-zeroes, we know how many they were since we read them
-                    let mut symbols = [0; 256];
-
-                    for (sym, pos) in freq_counts[non_zero..].iter().zip(symbols.iter_mut())
-                    {
-                        *pos = (sym.symbol & 255) as u8;
-                    }
-                    // write symbols
-                    dest.write_all(&symbols[0..sum])
-                        .expect("Could not write symbols to destination buffer");
-                }
-
-                // write data
-                // These serve two purpose
-                // 1. Write data
-                // 2. Check for data that is overwritten
-                //      -> The encode_bits_huffman may write to the next stream position(since we use one large vector
-                //          and subdivide it into smaller chunks) stream 1 may overwrite to stream2 position which corrupts stream
-                //          2 data.
-                dest.write_all(&buf1[0..stream1.get_position()])
-                    .expect("Failed to write to destination buffer");
-
-                dest.write_all(&buf2[0..stream2.get_position()])
-                    .expect("Failed to write to destination buffer");
-
-                dest.write_all(&buf3[0..stream3.get_position()])
-                    .expect("Failed to write to destination buffer");
-
-                dest.write_all(&buf4[0..stream4.get_position()])
-                    .expect("Failed to write to destination buffer");
-
-                dest.write_all(&buf5[0..stream5.get_position()])
-                    .expect("Failed to write to destination buffer");
-
-                stream1.reset();
-                stream2.reset();
-                stream3.reset();
-                stream4.reset();
-                stream5.reset();
+                encode_symbols(
+                    &mut buf,
+                    src_chunk,
+                    &entries,
+                    dest,
+                    info_bit[0],
+                    &mut freq_counts,
+                    non_zero,
+                    code_lengths,
+                    last_sym,
+                )
             }
         }
         // read the next block
@@ -611,9 +618,9 @@ pub fn huff_compress_4x<W: Write>(src: &[u8], dest: &mut W)
 }
 
 #[test]
-fn huff_compress()
+fn huff_compress_test()
 {
-    use std::fs::{read, OpenOptions};
+    use std::fs::OpenOptions;
     use std::io::BufWriter;
 
     let fs = OpenOptions::new()
@@ -626,7 +633,7 @@ fn huff_compress()
 
     let fd = vec![221; 10000];
 
-    huff_compress_4x(&fd, &mut fs);
+    huff_compress(&fd, &mut fs);
     println!(
         "{:?} {:?}",
         fs.get_ref().metadata().unwrap().len() as f64,
