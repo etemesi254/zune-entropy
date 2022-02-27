@@ -2,8 +2,8 @@
 
 use std::io::Read;
 
-use crate::bitstream::BitStreamReader;
 pub use crate::constants::LIMIT;
+use crate::huff_bitstream::BitStreamReader;
 use crate::utils::REVERSED_BITS;
 
 pub fn build_tree(table: &mut [u16; 1 << LIMIT], code_lengths: &[u8; LIMIT + 1], symbols: &[u8])
@@ -298,7 +298,7 @@ fn decompress_huff_inner(
 /// Caveats to understand for dest
 /// we will write from `dest.len()`  going forward, after decompression
 /// is done , dest.len() will contain uncompressed data
-pub fn huff_decompress_4x<R: Read>(src: &mut R, dest: &mut Vec<u8>)
+pub fn huff_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
 {
     // read block information
     let mut block_info = [0];
@@ -325,8 +325,6 @@ pub fn huff_decompress_4x<R: Read>(src: &mut R, dest: &mut Vec<u8>)
 
     let mut symbols = [0; 256];
 
-
-
     loop
     {
         block_length = u32::from_le_bytes(length);
@@ -335,7 +333,7 @@ pub fn huff_decompress_4x<R: Read>(src: &mut R, dest: &mut Vec<u8>)
         {
             dest.reserve(block_length as usize);
         }
-        if (block_info[0] >> 6) & 1 == 1
+        if (block_info[0] >> 5) & 1 == 1
         {
             // block was uncompressed
             // assert that the above reserve actually worked
@@ -353,11 +351,11 @@ pub fn huff_decompress_4x<R: Read>(src: &mut R, dest: &mut Vec<u8>)
 
                 dest.set_len(new_len);
                 // read_exact guarantees it will fill up buf, if it doesn't it will panic,
-                // hence the guarrantees of the set len are met.
+                // hence the guarantees of the set len are met.
                 src.read_exact(&mut dest[old_len..new_len]).unwrap();
             }
         }
-        else if (block_info[0] >> 5) & 1 == 1
+        else if (block_info[0] >> 4) & 1 == 1
         {
             // RLE block
             let mut rle = [0];
@@ -372,6 +370,7 @@ pub fn huff_decompress_4x<R: Read>(src: &mut R, dest: &mut Vec<u8>)
             //  2. Elements between old_len-new_len must be initialized -> Done straight after
             //     setting up the new length.
             assert!(dest.capacity() >= new_len, "Internal error, report to repo");
+
             unsafe {
                 dest.set_len(new_len);
             }
@@ -448,7 +447,7 @@ pub fn huff_decompress_4x<R: Read>(src: &mut R, dest: &mut Vec<u8>)
         }
         // top bit in block info indicates if block is the last
         // block.
-        if (block_info[0] >> 7 & 1) == 1
+        if (block_info[0] >> 6 & 1) == 1
         {
             // end of block
             break;
@@ -461,12 +460,12 @@ pub fn huff_decompress_4x<R: Read>(src: &mut R, dest: &mut Vec<u8>)
 }
 
 #[test]
-fn huff_decompress()
+fn huff_decompress_test()
 {
     use std::fs::{read, OpenOptions};
     use std::io::{BufReader, BufWriter};
 
-    use crate::huff_compress_4x;
+    use crate::huff_compress;
     {
         let fs = OpenOptions::new()
             .create(true)
@@ -478,7 +477,7 @@ fn huff_decompress()
 
         let fd = read("/Users/calebe/git/FiniteStateEntropy/programs/enwiki.smaller").unwrap();
 
-        huff_compress_4x(&fd, &mut fs);
+        huff_compress(&fd, &mut fs);
     }
     {
         let fs = OpenOptions::new()
@@ -496,6 +495,6 @@ fn huff_decompress()
             .unwrap();
         let _fd = BufWriter::new(fd);
 
-        //huff_decompress_4x(&mut fs, &mut fd);
+        //huff_decompress(&mut fs, &mut fd);
     }
 }
