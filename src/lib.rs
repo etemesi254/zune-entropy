@@ -1,3 +1,4 @@
+#![feature(stdsimd)]
 #![allow(clippy::assertions_on_constants)]
 #![warn(clippy::perf, clippy::pedantic, clippy::perf)]
 #![allow(
@@ -7,14 +8,20 @@
 )]
 extern crate core;
 
-mod bitstream;
 mod constants;
+
+mod fse_bitstream;
+mod huff_bitstream;
+
 mod fse_compress;
 mod huff_compress;
+
+mod fse_decompress;
 mod huff_decompress;
-mod huff_decompress_bmi;
-mod io;
+
 mod utils;
+
 pub use fse_compress::fse_compress;
-pub use huff_compress::huff_compress_4x;
-pub use huff_decompress::huff_decompress_4x;
+pub use fse_decompress::fse_decompress;
+pub use huff_compress::huff_compress;
+pub use huff_decompress::huff_decompress;
