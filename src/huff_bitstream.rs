@@ -3,7 +3,7 @@
 //! This module provides an interface to read and write bits (and bytes) for
 //! huffman
 
-use crate::constants::{LIMIT, TABLE_LOG, TABLE_SIZE};
+use crate::constants::{LIMIT, TABLE_SIZE};
 
 pub struct BitStreamReader<'src>
 {
@@ -70,7 +70,7 @@ impl<'src> BitStreamReader<'src>
     /// Decode a single symbol
     #[inline(always)]
     #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))] // bmi support
-    pub fn decode_single(&mut self, dest: &mut u8, table: &[u16; (1 << LIMIT)])
+    pub fn decode_single(&mut self, dest: &mut u8, table: &[u16; TABLE_SIZE])
     {
         let entry = table[(self.peek_bits::<LIMIT>())];
 
@@ -95,6 +95,7 @@ impl<'src> BitStreamReader<'src>
             // other architectures, normal subtraction,
             self.bits_left -= bits;
         }
+
         // write to position
         *dest = (entry >> 8) as u8;
     }
@@ -257,13 +258,7 @@ impl<'dest> BitStreamWriter<'dest>
 
         self.flush_fast();
     }
-    /// Set everything to zero.
-    pub fn reset(&mut self)
-    {
-        self.bits = 0;
-        self.buf = 0;
-        self.position = 0;
-    }
+
     pub fn get_position(&self) -> usize
     {
         self.position
