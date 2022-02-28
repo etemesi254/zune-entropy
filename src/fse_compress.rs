@@ -104,7 +104,9 @@ fn normalize_frequencies_fast(sym: &mut [Symbols; 256], non_zero: usize, total: 
         let mut second = sym[index - 1];
 
         let mut first = sym.get_mut(index).unwrap();
+
         trace!("Excess states:{}", excess_states);
+
         loop
         {
             if first.y == 1
@@ -270,7 +272,6 @@ fn generate_state_bits(freq_counts: &mut [Symbols; 256], non_zero: usize) -> u32
 /// you want ABCABCABABC kinda state,  so we need a good strategy for symbol spread,
 /// there are many techniques, sorting, precise symbol spread and a lot of other techniques
 /// but this lazy state generator is actually good.
-
 fn spread_symbols(freq_counts: &mut [Symbols; 256]) -> ([u16; TABLE_SIZE], [i32; 256])
 {
     /*
@@ -457,7 +458,6 @@ fn write_headers<W: Write>(
 
     dest.write_all(stream.get_output()).unwrap();
 }
-
 fn encode_symbols<W: Write>(
     src: &[u8], common_symbol: i16, symbols: &mut [Symbols; 256], next_states: &[u16; TABLE_SIZE],
     next_states_offset: &[i32; 256], buf: &mut [u8], dest: &mut W,
@@ -494,7 +494,6 @@ fn encode_symbols<W: Write>(
     let c = TABLE_SIZE as u16;
 
     // states for each interleaved streams
-    // (5 states)
     let (mut c1, mut c2, mut c3, mut c4, mut c5) = (c, c, c, c, c);
 
     let mut stream = FseStreamWriter::new(buf);
@@ -510,19 +509,21 @@ fn encode_symbols<W: Write>(
 
             stream.encode_symbol($chunk[$start + 4], symbols, next_states, &mut c5);
 
+
             stream.flush_fast();
         };
     }
 
     for chunk in src.rchunks_exact(SIZE)
     {
+        
         // do some unrolling
         unsafe {
-            encode_slice!(0, chunk);
-            encode_slice!(5, chunk);
-            encode_slice!(10, chunk);
-            encode_slice!(15, chunk);
             encode_slice!(20, chunk);
+            encode_slice!(15, chunk);
+            encode_slice!(10, chunk);
+            encode_slice!(5, chunk);
+            encode_slice!(0, chunk);
         }
     }
 
@@ -533,15 +534,26 @@ fn encode_symbols<W: Write>(
         let rem_chunks = src.rchunks_exact(SIZE).remainder();
 
         let mut start = 5 - (rem_chunks.len() % 5);
-        if start == 5
+
+        if  rem_chunks.len() % 10 == 0
         {
-            // if chunk is divisible by 5, don't add 5 dummy zeros
+            // if chunk is divisible by 10, don't add 5 dummy zeros
+            // if it is divisible by 5, is it okay to add?
             start = 0
         }
         // duplicate  the common symbol
         let mut new_loc = vec![common_symbol as u8; rem_chunks.len() + start];
 
-        new_loc[0..rem_chunks.len()].copy_from_slice(rem_chunks);
+        let end = new_loc.len()-rem_chunks.len();
+
+        new_loc[end..].copy_from_slice(rem_chunks);
+       
+        
+        // new_loc looks like
+        // a,a,a,a,[b,c,s,d] (`a`,is the most common symbol)
+        // duplicate values are found in the start since encoding  moves from
+        // the end to the beginning.
+        // new loc is divisible by 5 since we have 5 states.
 
         // do the final encoding.
         for chunk in new_loc.rchunks_exact(5)
@@ -685,23 +697,4 @@ pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W)
 
         src_chunk = &src[start..end];
     }
-}
-
-#[test]
-fn fse_compress_test()
-{
-    use std::fs::{read, OpenOptions};
-    use std::io::BufWriter;
-
-    let fs = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open("/Users/calebe/CLionProjects/zcif/tests.zcf")
-        .unwrap();
-    let mut fs = BufWriter::with_capacity(1 << 24, fs);
-
-    let fd = read("/Users/calebe/Projects/Data/COPYING").unwrap();
-
-    fse_compress(&fd, &mut fs);
 }
