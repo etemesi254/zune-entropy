@@ -145,6 +145,7 @@ fn decode_symbols(src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block
     let (mut c1, mut c2, mut c3, mut c4, mut c5) = stream.init_states();
 
     let mut initial = [0_u8; 5];
+
     stream.align_decoder();
 
     macro_rules! decode_five {
@@ -160,6 +161,7 @@ fn decode_symbols(src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block
             stream.decode_symbol(&mut c2, &mut $to[$start + 1], states);
 
             stream.decode_symbol(&mut c1, &mut $to[$start + 0], states);
+
         };
     }
     // so in our bad scheme, we added some bits that were unneeded.
@@ -171,13 +173,16 @@ fn decode_symbols(src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block
         decode_five!(initial, 0);
     }
 
-    // now dest is  aligned to a 5 byte boundary
+    let start = block_size-rounded_down;
+    // now dest is aligned to a 5 byte boundary
     // let's goooooo
-    let chunks = dest.get_mut(..).unwrap().rchunks_exact_mut(SIZE);
+    let chunks = dest.get_mut(start..).unwrap().chunks_exact_mut(SIZE);
 
     unsafe {
         for chunk in chunks
         {
+            decode_five!(chunk, 0);
+
             decode_five!(chunk, 5);
 
             decode_five!(chunk, 10);
@@ -188,7 +193,7 @@ fn decode_symbols(src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block
         }
     }
     let remainder = dest
-        .get_mut(5..)
+        .get_mut(start..)
         .unwrap()
         .chunks_exact_mut(SIZE)
         .into_remainder();
@@ -199,7 +204,8 @@ fn decode_symbols(src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block
             decode_five!(chunk, 0);
         }
     }
-    dest[0..5].copy_from_slice(&initial);
+
+    dest[0..start].copy_from_slice(&initial[5-start..]);
 }
 fn read_headers(buf: &[u8], symbol_count: u8) -> [Symbols; 256]
 {
@@ -232,6 +238,7 @@ fn read_headers(buf: &[u8], symbol_count: u8) -> [Symbols; 256]
 
     if (symbol_count & 1) != 0
     {
+        // Do the last odd value
         unsafe {
             stream.refill_fast();
         }
