@@ -46,10 +46,45 @@ use std::cmp::min;
 use std::convert::TryInto;
 use std::io::Write;
 
+use log::Level::Trace;
+use log::{debug, log_enabled, trace};
+
 use crate::constants::{LIMIT, SMALL_CHUNK_SIZE};
 use crate::huff_bitstream::BitStreamWriter;
 use crate::utils::{histogram, Symbols};
 
+
+// Config parameter, large numbers use more memory
+// compress faster BUT hurts compression.
+// Smaller ones favour compression but hurt speed.
+
+// summary 323 mb enwiki file (head  -n 4000000 ./enwiki > enwiki.small)
+//
+// Machine
+// MacBook-Pro.local 21.2.0 Darwin Kernel Version 21.2.0: Sun Nov 28 20:29:10 PST 2021;
+// root:xnu-8019.61.5~1/RELEASE_ARM64_T8101 arm64
+
+// |Chunk size| Speed       | Ratio    |
+// |----------|-------------|----------|
+// |1 << 18   | 1.541 Gb/s  |  0.68197 |
+// |1 << 17   | 1.486 Gb/s  |  0.67952 |
+// |1 << 16   | 1.378 Gb/s  |  0.67715 |
+// |1 << 15   | 1.248 Gb/s  |  0.67531 |
+//
+// OPTIMIZE-> This also affects compression by 1% depending on distributions
+// E.g 400 mb -> 176 mb enwiki file(compressed by lz4)
+// |Chunk size| Speed       | Ratio    |
+// |----------|-------------|----------|
+// |1 << 18   | 1.547 Gb/s  |  86.53 % |
+// |1 << 17   | 1.505 Gb/s  |  86.61 % |
+// |1 << 16   | 1.378 Gb/s  |  86.77 % |
+// |1 << 15   | 1.201 Gb/s  |  87.12 % |
+// It seems larger blocks on squeezed distributions lead to better compression
+// Due to increased headers and lower entropies for data, if this is used as a backend
+// after let's say Lz77 compression, probably bump this number up.
+
+// TODO: If this is changed(e.g 1<<19), there is a hard error on test files
+// investigate why
 const CHUNK_SIZE: usize = 1 << 17;
 
 /// Fast log2 approximation
@@ -352,9 +387,13 @@ fn encode_symbols<W: Write>(
     }
     unsafe {
         stream1.flush_final();
+
         stream2.flush_final();
+
         stream3.flush_final();
+
         stream4.flush_final();
+
         stream5.flush_final();
     }
     // write headers
@@ -385,8 +424,10 @@ fn encode_symbols<W: Write>(
 
         // sort again  by codes this time.
         freq_counts.sort_unstable_by(|a, b| a.x.cmp(&b.x));
+
         let sum = code_lengths.iter().map(|x| *x as usize).sum::<usize>();
 
+        debug!("Total symbols:{}", sum);
         // insert the last symbol, it was assigned a code length of 0000 hence the sort messed it up
         freq_counts[non_zero] = last_sym;
 
@@ -476,37 +517,6 @@ pub fn huff_compress<W: Write>(src: &[u8], dest: &mut W)
      *
      */
 
-    // Config parameter, large numbers use more memory
-    // compress faster BUT hurts compression.
-    // Smaller ones favour compression but hurt speed.
-
-    // summary 323 mb enwiki file (head  -n 4000000 ./enwiki > enwiki.small)
-    //
-    // Machine
-    // MacBook-Pro.local 21.2.0 Darwin Kernel Version 21.2.0: Sun Nov 28 20:29:10 PST 2021;
-    // root:xnu-8019.61.5~1/RELEASE_ARM64_T8101 arm64
-
-    // |Chunk size| Speed       | Ratio    |
-    // |----------|-------------|----------|
-    // |1 << 18   | 1.541 Gb/s  |  0.68197 |
-    // |1 << 17   | 1.486 Gb/s  |  0.67952 |
-    // |1 << 16   | 1.378 Gb/s  |  0.67715 |
-    // |1 << 15   | 1.248 Gb/s  |  0.67531 |
-    //
-    // OPTIMIZE-> This also affects compression by 1% depending on distributions
-    // E.g 400 mb -> 176 mb enwiki file(compressed by lz4)
-    // |Chunk size| Speed       | Ratio    |
-    // |----------|-------------|----------|
-    // |1 << 18   | 1.547 Gb/s  |  86.53 % |
-    // |1 << 17   | 1.505 Gb/s  |  86.61 % |
-    // |1 << 16   | 1.378 Gb/s  |  86.77 % |
-    // |1 << 15   | 1.201 Gb/s  |  87.12 % |
-    // It seems larger blocks on squeezed distributions lead to better compression
-    // Due to increased headers and lower entropies for data, if this is used as a backend
-    // after let's say Lz77 compression, probably bump this number up.
-
-    // TODO: If this is changed(e.g 1<<19), there is a hard error on test files
-    // investigate why
 
     // safety, if it goes above it can't be stored in the block.
     assert!(CHUNK_SIZE < 1 << 23);
@@ -553,8 +563,15 @@ pub fn huff_compress<W: Write>(src: &[u8], dest: &mut W)
                 info_bit[0] |= 1 << 6;
             }
 
+            if log_enabled!(Trace)
+            {
+                trace!("Compressed size : {}", compressed_ratio);
+                trace!("Ratio : {}", compressed_ratio as f32 / src_chunk.len() as f32);
+            }
             if compressed_ratio - 4096 > (src_chunk.len() as u32 * (u8::BITS))
             {
+                debug!("Block will not be compressed, emitting as uncompressed");
+
                 // encoding didn't work, (codes were assigned a longer distribution of lengths, probably
                 // incompressible data.
                 // set bit as uncompressed
@@ -594,17 +611,12 @@ pub fn huff_compress<W: Write>(src: &[u8], dest: &mut W)
 
                 let entries = freq_counts.map(crate::utils::Symbols::to_u32);
 
-                // Initialize read buffers
                 encode_symbols(
-                    &mut buf,
-                    src_chunk,
+                    &mut buf, src_chunk,
                     &entries,
-                    dest,
-                    info_bit[0],
-                    &mut freq_counts,
-                    non_zero,
-                    code_lengths,
-                    last_sym,
+                    dest, info_bit[0],
+                    &mut freq_counts, non_zero,
+                    code_lengths, last_sym,
                 )
             }
         }
