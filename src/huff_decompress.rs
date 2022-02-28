@@ -438,8 +438,7 @@ pub fn huff_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
 
             decompress_huff_inner(
                 huff_source,
-                &tbl,
-                &offsets,
+                &tbl, &offsets,
                 block_length as usize,
                 // write to uninitialized memory :)
                 dest.get_mut(start..).unwrap(),
@@ -459,42 +458,3 @@ pub fn huff_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
     }
 }
 
-#[test]
-fn huff_decompress_test()
-{
-    use std::fs::{read, OpenOptions};
-    use std::io::{BufReader, BufWriter};
-
-    use crate::huff_compress;
-    {
-        let fs = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open("/Users/calebe/CLionProjects/zcif/tests.zcif")
-            .unwrap();
-        let mut fs = BufWriter::with_capacity(1 << 24, fs);
-
-        let fd = read("/Users/calebe/git/FiniteStateEntropy/programs/enwiki.smaller").unwrap();
-
-        huff_compress(&fd, &mut fs);
-    }
-    {
-        let fs = OpenOptions::new()
-            .create(false)
-            .write(false)
-            .read(true)
-            .open("/Users/calebe/CLionProjects/zcif/tests.zcif")
-            .unwrap();
-        let _fs = BufReader::with_capacity(1 << 24, fs);
-
-        let fd = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open("/Users/calebe/git/FiniteStateEntropy/programs/enwiki.xml")
-            .unwrap();
-        let _fd = BufWriter::new(fd);
-
-        //huff_decompress(&mut fs, &mut fd);
-    }
-}
