@@ -1,11 +1,31 @@
+//! FSE bit-readers and writers
+//! 
+//! This file features a standalone Bit/Io implementation for 
+//! tANS/FSE bitreaders/bitwriters
+//! 
+//! It is Little Endian and entirely lifted from Eric Biggers xpack
+//! (see https://github.com/ebiggers/xpack) and it's pretty fast.
+//! (well it's the fastest I could come up with)
+//! 
+//! And as is with the Huffman , the BitStream takes care of encoding and decoding
+//! inside itself. Encoding is simply passing a symbol to encode_symbol()
+//! decoding happens when you call decode_symbol() (each with appropriate arguments)
+//! 
+//! Also all functions found in the inner encoder and decoder loops are inlined.
+//! 
+//! 
+//! # Safety
+//! The only unsafe function is the `flush_fast` and `refill_fast` since 
+//! they both write/read 8 bytes to/from memory , if it happens that the memory region is
+//! out of bounds, they will obviously be UB.
 use crate::constants::{MAX_TABLE_LOG, TABLE_LOG, TABLE_SIZE};
 use crate::utils::Symbols;
-
+/// Compact FSE bit-stream writer.
 pub struct FseStreamWriter<'dest>
 {
     // Number of actual bits in the bit buffer.
     bits: u8,
-    // should I use usize?
+    // Stores current unflushed bits
     buf: u64,
     // position to write this in the output buffer
     pub(crate) position: usize,
@@ -17,6 +37,8 @@ impl<'dest> FseStreamWriter<'dest>
     /// Create a new stream writer for a FSE
     pub fn new(out_dest: &mut [u8]) -> FseStreamWriter
     {
+        // start 8 bits from the end
+        // if we are on a 32 bit arch probably change this.
         let position = out_dest.len() - (u64::BITS / u8::BITS) as usize;
         return FseStreamWriter {
             bits: 0,
@@ -30,11 +52,17 @@ impl<'dest> FseStreamWriter<'dest>
     #[inline(always)]
     fn add_bits(&mut self, nbits: u8, value: u16)
     {
+        // check that adding the value won't corrupt top bits
+        // indicating value wasn't masked
+        debug_assert!((nbits as u32) <= value.leading_zeros());
+
+        // new bits are added to the lower bits of the bit buffer
         self.buf = (self.buf << nbits) | u64::from(value);
 
         self.bits += nbits as u8;
     }
-    /// Encode symbols and update curr_state
+    /// Encode symbols and update current state(curr_state) 
+    /// to point to the next state.
     #[inline(always)]
     pub fn encode_symbol(
         &mut self, symbol: u8, entries: &[Symbols; 256], next_states: &[u16; TABLE_SIZE],
@@ -42,7 +70,7 @@ impl<'dest> FseStreamWriter<'dest>
     )
     {
         let symbol = entries[usize::from(symbol)];
-
+        // How number of bits evolves is a bit tricky..
         let num_bits = ((symbol.x + (*curr_state as u32)) >> TABLE_LOG) as u8;
 
         let mask = (1 << num_bits) - 1;
@@ -97,6 +125,7 @@ impl<'dest> FseStreamWriter<'dest>
         self.buf <<= 8 - self.bits;
         self.buf |= 1 << (7 - self.bits);
         self.bits = 8;
+
         unsafe {
             self.flush_fast();
         }
@@ -160,7 +189,7 @@ impl<'src> FSEStreamReader<'src>
 
     /// Read some bytes from the input buffer.
     #[inline(always)]
-    pub unsafe fn refill_fast(&mut self)
+    pub(crate) unsafe fn refill_fast(&mut self)
     {
         /*
          * The refill always guarantees refills between 56-63
@@ -168,7 +197,8 @@ impl<'src> FSEStreamReader<'src>
          * Reading bits in far too many ways.
          * @ https://fgiesen.wordpress.com/2018/02/20/reading-bits-in-far-too-many-ways-part-2/
          *
-         * Bits stored will never go above 63 and if bits are in the range 56-63 no refills occur.         */
+         * Bits stored will never go above 63 and if bits are in the range 56-63 no refills occur
+         */
 
         let mut buf = [0; 8];
 
@@ -187,8 +217,7 @@ impl<'src> FSEStreamReader<'src>
         self.bits_left |= 56;
     }
 
-    /// Retrieve a variable amount
-    /// of bits from tha bit-buffer
+    /// Retrieve a variable amount of bits from tha bit-buffer
     ///
     /// # Arguments
     /// nbits: Number of bits to fetch from bit buffer
@@ -225,6 +254,8 @@ impl<'src> FSEStreamReader<'src>
         self.buffer >>= padding_bits;
     }
     /// Decode a single symbol from a state and update next state
+   
+    #[inline(always)]
     pub fn decode_symbol(&mut self, state: &mut u16, dest: &mut u8, states: &[u32; TABLE_SIZE])
     {
         // It's plain cute how this is the inverse of encode_symbol, code by code.
@@ -234,12 +265,13 @@ impl<'src> FSEStreamReader<'src>
         // num_bits   -> 8..16 bits.
         // next_state -> 16..32 bits.
 
-        // It's not faster to use get_unchecked(well on Mac OS), the '&(TABLE_SIZE-1)'
+        // It's not faster to use get_unchecked(well on Mac OS), the ' & (TABLE_SIZE-1)'
         // kinda does the same thing
         let next_state = states[(*state & (TABLE_SIZE - 1) as u16) as usize];
 
         // extract symbol
         *dest = (next_state & 0xFF) as u8;
+
         // number of bits
         let num_bits = ((next_state >> 8) & 255) as u8;
 
@@ -262,8 +294,8 @@ impl<'src> FSEStreamReader<'src>
 
             // we added a dummy byte to ensure the flush works, so let's discard that
             self.get_bits(1);
+
             // each state is stored into 11 bits
-            // DO NOT CHANGE
             let c5 = self.get_bits(11);
 
             let c4 = self.get_bits(11);
