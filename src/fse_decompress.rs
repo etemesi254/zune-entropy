@@ -207,7 +207,7 @@ fn decode_symbols(src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block
 
     dest[0..start].copy_from_slice(&initial[5-start..]);
 }
-fn read_headers(buf: &[u8], symbol_count: u8) -> [Symbols; 256]
+fn read_headers(buf: &[u8], symbol_count: u8,state_bits:u8) -> [Symbols; 256]
 {
     let mut symbols = [Symbols::default(); 256];
 
@@ -219,7 +219,7 @@ fn read_headers(buf: &[u8], symbol_count: u8) -> [Symbols; 256]
             stream.refill_fast();
         }
         let symbol = stream.get_bits(8) as usize;
-        let state = stream.get_bits(11) as u16;
+        let state = stream.get_bits(state_bits) as u16;
         symbols[symbol] = Symbols {
             z: symbol as i16,
             y: state,
@@ -227,7 +227,7 @@ fn read_headers(buf: &[u8], symbol_count: u8) -> [Symbols; 256]
         };
 
         let symbol = stream.get_bits(8) as usize;
-        let state = stream.get_bits(11) as u16;
+        let state = stream.get_bits(state_bits) as u16;
 
         symbols[symbol] = Symbols {
             z: symbol as i16,
@@ -243,7 +243,7 @@ fn read_headers(buf: &[u8], symbol_count: u8) -> [Symbols; 256]
             stream.refill_fast();
         }
         let symbol = stream.get_bits(8) as usize;
-        let state = stream.get_bits(11) as u16;
+        let state = stream.get_bits(state_bits) as u16;
 
         symbols[symbol] = Symbols {
             z: symbol as i16,
@@ -274,6 +274,8 @@ pub fn fse_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
 
     let mut header_t = [0; 2];
 
+    let mut state_bits = [0];
+
     let mut compressed_size = [0; 4];
 
     let mut symbols_count = [0];
@@ -292,12 +294,14 @@ pub fn fse_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
 
         let header_size = u16::from_le_bytes(header_t);
 
+        src.read_exact(&mut state_bits).unwrap();
+
         src.read_exact(&mut symbols_count).unwrap();
 
         src.read_exact(&mut header[0..usize::from(header_size)])
             .unwrap();
 
-        let symbols = read_headers(&header[0..usize::from(header_size)], symbols_count[0]);
+        let symbols = read_headers(&header[0..usize::from(header_size)], symbols_count[0],state_bits[0]);
         // reconstruct next_state
         let next_state = spread_symbols(&symbols);
 

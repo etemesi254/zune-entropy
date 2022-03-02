@@ -6,7 +6,8 @@
 //!
 //!   3 bytes -> Block size
 //!   2 bytes -> Header size
-//!   n bytes -> Headers(sum of the above two bytes)
+//!   1 byte  -> Log2 of maximum state of symbol(used by decode_header)
+//!   n bytes -> Headers(sum of the above header size )
 //!
 //!   3 bytes -> Compressed block size.
 //!   n bytes -> Compressed data.
@@ -299,6 +300,7 @@ fn spread_symbols(freq_counts: &mut [Symbols; 256]) -> ([u16; TABLE_SIZE], [i32;
 
     let mut next_state_offset = [0; 256];
 
+
     for sym in freq_counts.iter_mut()
     {
         if sym.y == 0
@@ -366,7 +368,7 @@ fn spread_symbols(freq_counts: &mut [Symbols; 256]) -> ([u16; TABLE_SIZE], [i32;
 ///
 /// The format is
 /// |symbol| -> 8 bits
-/// |State counts| -> TABLE_LOG bits
+/// |State counts| -> max_state_bits(see below for explanation)
 fn write_headers<W: Write>(
     symbols: &[Symbols; 256], non_zero: usize, block_size: usize, last_block: bool, dest: &mut W,
 )
@@ -385,16 +387,15 @@ fn write_headers<W: Write>(
      * But we know symbol is between 0..255
      * and slot is between 0..TABLE_SIZE
      * so we can use a bit-packing convention
-     * slot occupies 0..TABLE_LOG bits.
-     * and  the symbol occupies the top bits after TABLE_LOG.
+     * slot occupies 0..max_state_bits bits.
      *
-     * Since we are doing bit-io lets pack them into the following
-     *
-     * symbol => 8 bits
-     * slots => TABLE_LOG bits
-     *
-     * with this scheme, we can fit 2 symbols+slots before we flush
-     * to output buffer, so let's do that.
+     * Okay max_states_bits is a bit complex, so we have a sorted
+     * array of symbols, with the maximum state being in the 255th bit
+     * So to know how many bits to use to encode states, simply take the
+     * number of bits for the maximum symbol.
+     * E.g if maximum symbol was given 255 slots, we know all other symbols
+     * were given less than 255 slots, so can be represented with log2(255)
+     * bits=8 bits, now all states will be encoded in 8 bits
      */
 
     let info_bit = 1 << 7 | u8::from(last_block) << 6;
@@ -403,12 +404,16 @@ fn write_headers<W: Write>(
 
     let remainder = chunks.remainder();
     // we can determine the size of the output buffer.
-    // each symbol + state occupies 18 bits.
+    // each symbol + state occupies up to 18 bits.
     // so output == (symbol * 2 bytes)+2 bits for each symbol.
     // So overallocate
     let mut output = vec![0_u8; (255 - non_zero) * 4];
 
     let mut stream = BitStreamWriter::new(&mut output);
+
+    // this won't go Past 11 bits
+    let state_bits = (u16::BITS-symbols[255].y.leading_zeros()) as u8;
+    assert!(state_bits<=11);
 
     let (mut symbol, mut state);
     for chunk in chunks
@@ -417,13 +422,13 @@ fn write_headers<W: Write>(
         state = chunk[0].y as u64;
 
         stream.add_bits(symbol, u8::BITS as u8);
-        stream.add_bits(state, TABLE_LOG as u8);
+        stream.add_bits(state, state_bits as u8);
 
         symbol = chunk[1].z as u64;
         state = chunk[1].y as u64;
 
         stream.add_bits(symbol, u8::BITS as u8);
-        stream.add_bits(state, TABLE_LOG as u8);
+        stream.add_bits(state, state_bits as u8);
 
         unsafe {
             stream.flush_fast();
@@ -435,7 +440,7 @@ fn write_headers<W: Write>(
         state = chunk.y as u64;
 
         stream.add_bits(symbol, u8::BITS as u8);
-        stream.add_bits(state, TABLE_LOG as u8);
+        stream.add_bits(state, state_bits as u8);
         unsafe {
             stream.flush_fast();
         }
@@ -453,8 +458,12 @@ fn write_headers<W: Write>(
     dest.write_all(&block_size.to_le_bytes()[0..3]).unwrap();
     // header size
     dest.write_all(&header_size.to_le_bytes()[0..2]).unwrap();
+
+    // write number used to do state bits
+    dest.write_all(&[state_bits]).unwrap();
     // write number of symbols
     dest.write_all(&[255 - (non_zero - 1) as u8]).unwrap();
+
 
     dest.write_all(stream.get_output()).unwrap();
 }
