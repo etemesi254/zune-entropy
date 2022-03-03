@@ -2,7 +2,11 @@
 
 This repo contains two types of static entropy coders, Huffman and FSE/tANS
 
-# Summary 
+The files are very much in beta.
+
+# Benchmark
+
+There is a benchmark program found [here](https://github.com/etemesi254/zcif_bin/tree/main) for benchmarking 
 
 File `enwiki.small`
 
