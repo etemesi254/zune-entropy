@@ -31,7 +31,7 @@ impl Symbols
         //
         // 0-8: code length
         // 8-19: code
-        (REVERSED_BITS[self.x as usize] >> (16 - self.y)) << 8 | (self.y) as u32
+        (REVERSED_BITS[self.x as usize] >> (16 - self.y)) << 8 | u32::from(self.y)
     }
 }
 

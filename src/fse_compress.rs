@@ -8,7 +8,7 @@
 //!   2 bytes -> Header size
 //!   1 byte  ->
 //!         4 bits-> Maximum table log size
-//!         4 bits-> Log2 size of maximum state of symbol(used by decode_header)
+//!         4 bits-> Log2 size of maximum state of symbol(used by `decode_header`)
 //!   n bytes -> Headers(sum of the above header size )
 //!
 //!   3 bytes -> Compressed block size.
@@ -31,7 +31,7 @@ const CHUNK_SIZE: usize = 1 << 17;
 const SIZE: usize = 25;
 ///
 /// Scale up or down frequency occurrences from histogramming to fit in to.
-/// fit into 2^TABLE_LOG(TABLE_SIZE). while ensuring every non-zero frequency gets a frequency
+/// fit into `2^TABLE_LOG(TABLE_SIZE`). while ensuring every non-zero frequency gets a frequency
 /// >=1, even for low probability symbols
 ///
 /// ## Arguments
@@ -179,7 +179,7 @@ fn normalize_frequencies_fast(
 /// # Modifies
 /// This modifies the value `x` of every non zero frequency counts
 /// storing a value that allows us to branchlessly determine if we are using
-/// max_bits or max_bits-1
+/// `max_bits` or max_bits-1
 ///
 /// # Returns
 /// A number indicating how compressible this block is
@@ -253,10 +253,10 @@ fn generate_state_bits(freq_counts: &mut [Symbols; 256], non_zero: usize, table_
         // sym.x <- max_bits
 
         compressibility += sym.x * hist;
-        sym.x = (sym.x << MAX_TABLE_LOG) - (((sym.y) as u32) << (sym.x));
+        sym.x = (sym.x << MAX_TABLE_LOG) - (u32::from(sym.y) << (sym.x));
     }
 
-    return compressibility;
+    compressibility
 }
 /// Generate a pseudo state which we will use to spread symbols
 ///
@@ -357,9 +357,9 @@ fn spread_symbols(
      */
     let mut next_state = [0; TABLE_SIZE];
 
-    for i in 0..table_size
+    for( i,symbol) in state_array.iter().take(table_size).enumerate()
     {
-        let symbol = (state_array[i]) as usize;
+        let symbol = (*symbol) as usize;
 
         let pos = cumulative_state_counts[symbol];
 
@@ -367,14 +367,14 @@ fn spread_symbols(
 
         cumulative_state_counts[symbol] += 1;
     }
-    return (next_state, next_state_offset);
+    (next_state, next_state_offset)
 }
 /// Write headers, packing symbols and their state counts
 /// into a bitstream format
 ///
 /// The format is
 /// |symbol| -> 8 bits
-/// |State counts| -> max_state_bits(see below for explanation)
+/// |State counts| -> `max_state_bits(see` below for explanation)
 fn write_headers<W: Write>(
     symbols: &[Symbols; 256], non_zero: usize, block_size: usize, table_log: usize,
     last_block: bool, dest: &mut W,
@@ -419,6 +419,8 @@ fn write_headers<W: Write>(
     let mut stream = BitStreamWriter::new(&mut output);
 
     // this won't go Past 11 bits
+    // there is a theoretical bug,
+    // TODO:Fix that theoretical bug.
     let state_bits = (u16::BITS - symbols[255].y.leading_zeros()) as u8;
 
     assert!(state_bits <= 11);
@@ -427,13 +429,13 @@ fn write_headers<W: Write>(
     for chunk in chunks
     {
         symbol = chunk[0].z as u64;
-        state = chunk[0].y as u64;
+        state = u64::from(chunk[0].y);
 
         stream.add_bits(symbol, u8::BITS as u8);
         stream.add_bits(state, state_bits as u8);
 
         symbol = chunk[1].z as u64;
-        state = chunk[1].y as u64;
+        state = u64::from(chunk[1].y);
 
         stream.add_bits(symbol, u8::BITS as u8);
         stream.add_bits(state, state_bits as u8);
@@ -445,7 +447,7 @@ fn write_headers<W: Write>(
     for chunk in remainder
     {
         symbol = chunk.z as u64;
-        state = chunk.y as u64;
+        state = u64::from(chunk.y);
 
         stream.add_bits(symbol, u8::BITS as u8);
         stream.add_bits(state, state_bits as u8);
@@ -482,7 +484,7 @@ fn max_log(src_size: usize) -> usize
 {
     let high_bits = (usize::BITS - (src_size - 1).leading_zeros()) - 2;
 
-    return max(min(MAX_TABLE_LOG, high_bits as usize), MIN_TABLE_LOG);
+    max(min(MAX_TABLE_LOG, high_bits as usize), MIN_TABLE_LOG)
 }
 fn encode_symbols<W: Write>(
     src: &[u8], common_symbol: i16, symbols: &mut [Symbols; 256], table_size: usize,
@@ -563,7 +565,7 @@ fn encode_symbols<W: Write>(
         {
             // if chunk is divisible by 10, don't add 5 dummy zeros
             // if it is divisible by 5, is it okay to add?
-            start = 0
+            start = 0;
         }
         // duplicate  the common symbol
         let mut new_loc = vec![common_symbol as u8; rem_chunks.len() + start];

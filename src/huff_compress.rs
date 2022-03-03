@@ -34,13 +34,13 @@
 //! # 3. Huffman Compressed notes
 //! Huffman bit-streams are written in Little Endian order and are bit-reversed.
 //!
-//! The headers are arranged in MSB order and their canonical code length (see generate_code) are
+//! The headers are arranged in MSB order and their canonical code length (see `generate_code`) are
 //! bit-reversed both by the encoder and the decoder(Bit reversal code is found in utils.rs just a large
 //! array)
 //! Do note that we might not compress data if it doesn't make sense to compress it
 //! This is handled transparently and requires no effect from the calling function
 //!
-//! More on the library inner workings are found on huff_compress
+//! More on the library inner workings are found on `huff_compress`
 //!
 use std::cmp::min;
 use std::convert::TryInto;
@@ -87,6 +87,7 @@ use crate::utils::{histogram, Symbols};
 const CHUNK_SIZE: usize = 1 << 17;
 
 /// Fast log2 approximation
+#[allow(clippy::cast_precision_loss,clippy::cast_sign_loss)]
 fn fast_log2(x: f32) -> f32
 {
     /*
@@ -106,7 +107,7 @@ fn fast_log2(x: f32) -> f32
 
     y - 124.225_52 - 1.498_030_3 * mx_f - 1.725_88 / (0.352_088_72 + mx_f)
 }
-#[allow(clippy::mut_range_bound)]
+#[allow(clippy::mut_range_bound,clippy::cast_sign_loss)]
 fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
 {
     /*
@@ -342,15 +343,15 @@ fn encode_symbols<W: Write>(
     let start5 = src5.len() % SMALL_CHUNK_SIZE;
 
     // write until all chunks are aligned to a 25 character boundary
-    stream1.write_bits_slow(&src1[0..start1], &entries);
+    stream1.write_bits_slow(&src1[0..start1], entries);
 
-    stream2.write_bits_slow(&src2[0..start2], &entries);
+    stream2.write_bits_slow(&src2[0..start2], entries);
 
-    stream3.write_bits_slow(&src3[0..start3], &entries);
+    stream3.write_bits_slow(&src3[0..start3], entries);
 
-    stream4.write_bits_slow(&src4[0..start4], &entries);
+    stream4.write_bits_slow(&src4[0..start4], entries);
 
-    stream5.write_bits_slow(&src5[0..start5], &entries);
+    stream5.write_bits_slow(&src5[0..start5], entries);
 
     // now chunks are aligned to 25, no need to check for remainders because they won't be there
     for ((((chunk1, chunk2), chunk3), chunk4), chunk5) in src1[start1..]
@@ -399,7 +400,7 @@ fn encode_symbols<W: Write>(
     {
         dest.write_all(&[info_bit]).unwrap();
         // total block size, in little endian
-        dest.write(&src_chunk.len().to_le_bytes()[0..3])
+        dest.write_all(&src_chunk.len().to_le_bytes()[0..3])
             .expect("Could not write block size");
 
         // add jump tables ->10 bytes
@@ -551,7 +552,7 @@ pub fn huff_compress<W: Write>(src: &[u8], dest: &mut W)
 
             for code in &freq_counts[non_zero..]
             {
-                compressed_ratio += ((code.y) as u32) * code.x;
+                compressed_ratio += u32::from(code.y) * code.x;
             }
             if end == src.len()
             {
@@ -622,7 +623,7 @@ pub fn huff_compress<W: Write>(src: &[u8], dest: &mut W)
                     non_zero,
                     code_lengths,
                     last_sym,
-                )
+                );
             }
         }
         // read the next block

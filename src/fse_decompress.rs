@@ -1,6 +1,6 @@
 use std::io::Read;
 
-use crate::constants::{state_generator, TABLE_LOG, TABLE_SIZE};
+use crate::constants::{state_generator, TABLE_SIZE};
 use crate::fse_bitstream::FSEStreamReader;
 use crate::huff_bitstream::BitStreamReader;
 use crate::utils::Symbols;
@@ -110,9 +110,8 @@ fn spread_symbols(
      *
      */
     let ct = (tbl_size - 1) as u16;
-    for state in 0..tbl_size
+    for sym in state_array.iter_mut().take(tbl_size)
     {
-        let mut sym = &mut state_array[state];
 
         let counter = slots[sym.z as usize];
 
@@ -134,9 +133,9 @@ fn spread_symbols(
     // num_bits   -> 8..16 bits.  [sym.x]
     // next_state -> 16..32 bits. [sym.y]
 
-    let next_state = state_array.map(|x| u32::from(x.y) << 16 | x.x << 8 | ((x.z) as u32));
+    
 
-    return next_state;
+    state_array.map(|x| u32::from(x.y) << 16 | x.x << 8 | ((x.z) as u32))
 }
 
 fn decode_symbols(src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block_size: usize)
@@ -254,7 +253,7 @@ fn read_headers(buf: &[u8], symbol_count: u8, state_bits: u8) -> [Symbols; 256]
             x: 0,
         };
     }
-    return symbols;
+    symbols
 }
 pub fn fse_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
 {

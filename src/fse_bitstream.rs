@@ -3,13 +3,13 @@
 //! This file features a standalone Bit/Io implementation for
 //! tANS/FSE bitreaders/bitwriters
 //!
-//! It is Little Endian and entirely lifted from Eric Biggers xpack
-//! (see https://github.com/ebiggers/xpack) and it's pretty fast.
+//! It is Little Endian and entirely lifted from Eric Biggers
+//! [xpack](https://github.com/ebiggers/xpack) and it's pretty sweet.
 //! (well it's the fastest I could come up with)
 //!
-//! And as is with the Huffman , the BitStream takes care of encoding and decoding
-//! inside itself. Encoding is simply passing a symbol to encode_symbol()
-//! decoding happens when you call decode_symbol() (each with appropriate arguments)
+//! And as is with the Huffman , the `BitStream` takes care of encoding and decoding
+//! inside itself. Encoding is simply passing a symbol to `encode_symbol`()
+//! decoding happens when you call `decode_symbol`() (each with appropriate arguments)
 //!
 //! Also all functions found in the inner encoder and decoder loops are inlined.
 //!
@@ -18,9 +18,9 @@
 //! The only unsafe function is the `flush_fast` and `refill_fast` since
 //! they both write/read 8 bytes to/from memory , if it happens that the memory region is
 //! out of bounds, they will obviously be UB.
-use log::debug;
 
-use crate::constants::{MAX_TABLE_LOG, TABLE_LOG, TABLE_SIZE};
+
+use crate::constants::{MAX_TABLE_LOG, TABLE_SIZE};
 use crate::utils::Symbols;
 /// Compact FSE bit-stream writer.
 pub struct FseStreamWriter<'dest>
@@ -42,12 +42,13 @@ impl<'dest> FseStreamWriter<'dest>
         // start 8 bits from the end
         // if we are on a 32 bit arch probably change this.
         let position = out_dest.len() - (u64::BITS / u8::BITS) as usize;
-        return FseStreamWriter {
+
+        FseStreamWriter {
             bits: 0,
             buf: 0,
             position,
             dest: out_dest,
-        };
+        }
     }
     /// Add new bits to the buffer
     /// and update bits in the buffer.
@@ -56,16 +57,17 @@ impl<'dest> FseStreamWriter<'dest>
     {
         // check that adding the value won't corrupt top bits
         // indicating value wasn't masked
-        debug_assert!((nbits as u32) <= value.leading_zeros());
+        debug_assert!((u32::from(nbits)) <= value.leading_zeros());
 
         // new bits are added to the lower bits of the bit buffer
         self.buf = (self.buf << nbits) | u64::from(value);
 
         self.bits += nbits as u8;
     }
-    /// Encode symbols and update current state(curr_state)
+    /// Encode symbols and update current `state(curr_state`)
     /// to point to the next state.
     #[inline(always)]
+    #[allow(clippy::cast_sign_loss)]
     pub fn encode_symbol(
         &mut self, symbol: u8, entries: &[Symbols; 256], next_states: &[u16; TABLE_SIZE],
         curr_state: &mut u16,
@@ -73,7 +75,7 @@ impl<'dest> FseStreamWriter<'dest>
     {
         let symbol = entries[usize::from(symbol)];
         // How number of bits evolves is a bit tricky..
-        let num_bits = ((symbol.x + (*curr_state as u32)) >> MAX_TABLE_LOG) as u8;
+        let num_bits = ((symbol.x + u32::from(*curr_state)) >> MAX_TABLE_LOG) as u8;
 
         let mask = (1 << num_bits) - 1;
 
@@ -243,7 +245,7 @@ impl<'src> FSEStreamReader<'src>
 
         self.buffer >>= nbits;
 
-        return bytes;
+        bytes
     }
     /// Align the input bitstream to start where the
     /// the encoder left at
@@ -313,7 +315,7 @@ impl<'src> FSEStreamReader<'src>
 
             let c1 = self.get_bits(11);
 
-            return (c1, c2, c3, c4, c5);
+            (c1, c2, c3, c4, c5)
         }
     }
 }

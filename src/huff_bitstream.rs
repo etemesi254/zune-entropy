@@ -1,4 +1,4 @@
-//! BitStreamReader API
+//! `BitStreamReader` API
 //!
 //! This module provides an interface to read and write bits (and bytes) for
 //! huffman
@@ -19,7 +19,7 @@ pub struct BitStreamReader<'src>
 
 impl<'src> BitStreamReader<'src>
 {
-    /// Create a new BitStreamReader instance
+    /// Create a new `BitStreamReader` instance
     ///
     /// # Expectations
     /// The buffer must be padded with fill bytes in the end,
@@ -109,7 +109,7 @@ impl<'src> BitStreamReader<'src>
 
         self.bits_left -= num_bits;
 
-        return value;
+        value
     }
 
     // Check that we didn't read past our buffer
@@ -191,11 +191,12 @@ impl<'dest> BitStreamWriter<'dest>
     #[inline(always)]
     pub fn add_bits(&mut self, value: u64, nbits: u8)
     {
-        self.buf |= u64::from(value) << self.bits;
+        self.buf |= value << self.bits;
 
         self.bits += nbits;
     }
     #[inline(always)]
+    #[allow(clippy::trivially_copy_pass_by_ref)] // Passing by value is detrimental here
     pub unsafe fn encode_symbols(&mut self, symbols: &[u8; 5], entry: &[u32; 256])
     {
         /*
