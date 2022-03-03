@@ -1,23 +1,25 @@
 //! FSE bit-readers and writers
-//! 
-//! This file features a standalone Bit/Io implementation for 
+//!
+//! This file features a standalone Bit/Io implementation for
 //! tANS/FSE bitreaders/bitwriters
-//! 
+//!
 //! It is Little Endian and entirely lifted from Eric Biggers xpack
 //! (see https://github.com/ebiggers/xpack) and it's pretty fast.
 //! (well it's the fastest I could come up with)
-//! 
+//!
 //! And as is with the Huffman , the BitStream takes care of encoding and decoding
 //! inside itself. Encoding is simply passing a symbol to encode_symbol()
 //! decoding happens when you call decode_symbol() (each with appropriate arguments)
-//! 
+//!
 //! Also all functions found in the inner encoder and decoder loops are inlined.
-//! 
-//! 
+//!
+//!
 //! # Safety
-//! The only unsafe function is the `flush_fast` and `refill_fast` since 
+//! The only unsafe function is the `flush_fast` and `refill_fast` since
 //! they both write/read 8 bytes to/from memory , if it happens that the memory region is
 //! out of bounds, they will obviously be UB.
+use log::debug;
+
 use crate::constants::{MAX_TABLE_LOG, TABLE_LOG, TABLE_SIZE};
 use crate::utils::Symbols;
 /// Compact FSE bit-stream writer.
@@ -61,7 +63,7 @@ impl<'dest> FseStreamWriter<'dest>
 
         self.bits += nbits as u8;
     }
-    /// Encode symbols and update current state(curr_state) 
+    /// Encode symbols and update current state(curr_state)
     /// to point to the next state.
     #[inline(always)]
     pub fn encode_symbol(
@@ -71,13 +73,14 @@ impl<'dest> FseStreamWriter<'dest>
     {
         let symbol = entries[usize::from(symbol)];
         // How number of bits evolves is a bit tricky..
-        let num_bits = ((symbol.x + (*curr_state as u32)) >> TABLE_LOG) as u8;
+        let num_bits = ((symbol.x + (*curr_state as u32)) >> MAX_TABLE_LOG) as u8;
 
         let mask = (1 << num_bits) - 1;
 
         let low_bits = *curr_state & mask;
 
         self.add_bits(num_bits, low_bits);
+        //
 
         // Determine next state
         let offset = (*curr_state >> num_bits) as i16;
@@ -88,15 +91,19 @@ impl<'dest> FseStreamWriter<'dest>
     /// Encode final values of states to the bitstream
     /// The decoder will read final states from the bitstream
     /// and work its way to the initial state
-    pub fn encode_final_states(&mut self, c1: u16, c2: u16, c3: u16, c4: u16, c5: u16)
+    pub fn encode_final_states(
+        &mut self, c1: u16, c2: u16, c3: u16, c4: u16, c5: u16, table_size: usize,
+    )
     {
         // this should be zero since we did a flush earlier
         assert_eq!(self.bits, 0);
 
         self.buf = 0;
+        let mask = (table_size - 1) as u16;
+
         macro_rules! encode_single {
             ($state:tt,$bits:tt) => {
-                self.add_bits($bits as u8, $state & ((1 << MAX_TABLE_LOG) - 1));
+                self.add_bits($bits as u8, $state & mask);
             };
         }
         encode_single!(c1, MAX_TABLE_LOG);
@@ -254,7 +261,7 @@ impl<'src> FSEStreamReader<'src>
         self.buffer >>= padding_bits;
     }
     /// Decode a single symbol from a state and update next state
-   
+
     #[inline(always)]
     pub fn decode_symbol(&mut self, state: &mut u16, dest: &mut u8, states: &[u32; TABLE_SIZE])
     {

@@ -5,12 +5,14 @@ use crate::fse_bitstream::FSEStreamReader;
 use crate::huff_bitstream::BitStreamReader;
 use crate::utils::Symbols;
 
-fn spread_symbols(freq_counts: &[Symbols; 256]) -> [u32; TABLE_SIZE]
+fn spread_symbols(
+    freq_counts: &[Symbols; 256], tbl_log: usize, tbl_size: usize,
+) -> [u32; TABLE_SIZE]
 {
     // the start and the end of each state
     const INITIAL_STATE: usize = 0;
 
-    let state_gen = state_generator(TABLE_SIZE);
+    let state_gen = state_generator(tbl_size);
 
     // if state is even,slots distribution won't work
     assert_eq!(state_gen & 1, 1, "State cannot be an even number");
@@ -53,14 +55,14 @@ fn spread_symbols(freq_counts: &[Symbols; 256]) -> [u32; TABLE_SIZE]
             state_array[state].z = symbol;
             state_array[state].y = sym.y;
 
-            state = (state + state_gen) & (TABLE_SIZE - 1);
+            state = (state + state_gen) & (tbl_size - 1);
 
             count -= 1;
         }
     }
     // Cumulative count should be equal to table size
     assert_eq!(
-        c_count as usize, TABLE_SIZE,
+        c_count as usize, tbl_size,
         "Cumulative count is not equal to table size, internal error"
     );
 
@@ -107,7 +109,8 @@ fn spread_symbols(freq_counts: &[Symbols; 256]) -> [u32; TABLE_SIZE]
      *
      *
      */
-    for state in 0..TABLE_SIZE
+    let ct = (tbl_size - 1) as u16;
+    for state in 0..tbl_size
     {
         let mut sym = &mut state_array[state];
 
@@ -115,9 +118,9 @@ fn spread_symbols(freq_counts: &[Symbols; 256]) -> [u32; TABLE_SIZE]
 
         slots[sym.z as usize] += 1;
 
-        let num_bits = (TABLE_LOG as u32) - (15 - (counter | 1).leading_zeros());
+        let num_bits = (tbl_log as u32) - (15 - (counter | 1).leading_zeros());
 
-        let destination_range_start = (counter << num_bits) - TABLE_SIZE as u16;
+        let destination_range_start = ((counter << num_bits) - tbl_size as u16) & (ct);
 
         // y stores start of next range
         sym.y = destination_range_start;
@@ -161,7 +164,6 @@ fn decode_symbols(src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block
             stream.decode_symbol(&mut c2, &mut $to[$start + 1], states);
 
             stream.decode_symbol(&mut c1, &mut $to[$start + 0], states);
-
         };
     }
     // so in our bad scheme, we added some bits that were unneeded.
@@ -173,7 +175,7 @@ fn decode_symbols(src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block
         decode_five!(initial, 0);
     }
 
-    let start = block_size-rounded_down;
+    let start = block_size - rounded_down;
     // now dest is aligned to a 5 byte boundary
     // let's goooooo
     let chunks = dest.get_mut(start..).unwrap().chunks_exact_mut(SIZE);
@@ -205,9 +207,9 @@ fn decode_symbols(src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block
         }
     }
 
-    dest[0..start].copy_from_slice(&initial[5-start..]);
+    dest[0..start].copy_from_slice(&initial[5 - start..]);
 }
-fn read_headers(buf: &[u8], symbol_count: u8,state_bits:u8) -> [Symbols; 256]
+fn read_headers(buf: &[u8], symbol_count: u8, state_bits: u8) -> [Symbols; 256]
 {
     let mut symbols = [Symbols::default(); 256];
 
@@ -220,6 +222,7 @@ fn read_headers(buf: &[u8], symbol_count: u8,state_bits:u8) -> [Symbols; 256]
         }
         let symbol = stream.get_bits(8) as usize;
         let state = stream.get_bits(state_bits) as u16;
+
         symbols[symbol] = Symbols {
             z: symbol as i16,
             y: state,
@@ -301,9 +304,17 @@ pub fn fse_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
         src.read_exact(&mut header[0..usize::from(header_size)])
             .unwrap();
 
-        let symbols = read_headers(&header[0..usize::from(header_size)], symbols_count[0],state_bits[0]);
+        let tbl_log = state_bits[0] >> 4;
+
+        let tbl_size = 1 << tbl_log;
+
+        let symbols = read_headers(
+            &header[0..usize::from(header_size)],
+            symbols_count[0],
+            state_bits[0] & 0xF,
+        );
         // reconstruct next_state
-        let next_state = spread_symbols(&symbols);
+        let next_state = spread_symbols(&symbols, tbl_log as usize, tbl_size);
 
         src.read_exact(&mut compressed_size[0..3]).unwrap();
 
@@ -356,25 +367,4 @@ pub fn fse_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
 
         src.read_exact(length.get_mut(0..3).unwrap()).unwrap();
     }
-}
-
-#[test]
-fn fse_decompress_test()
-{
-    use std::fs::read;
-    use std::io::Cursor;
-
-    use crate::fse_compress;
-
-    let mut fs = Vec::with_capacity(1 << 24);
-
-    let fd = read("/Users/calebe/Projects/Data/en").unwrap();
-
-    fse_compress(&fd, &mut fs);
-
-    let mut cursor = Cursor::new(fs);
-
-    let mut vecr = vec![];
-
-    fse_decompress(&mut cursor, &mut vecr)
 }
