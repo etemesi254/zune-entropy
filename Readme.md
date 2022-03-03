@@ -25,11 +25,12 @@ Darwin MacBook-Pro.local 21.2.0 Darwin Kernel Version 21.2.0: Sun Nov 28 20:29:1
 |Encoder/Decoder|Runs|Time    |Speed     |Ratio      |
 |---------------|----|--------|----------|-----------|
 | Huffman Encode| 20 |4409ms  | 1466 Mb/s|1.4717 to 1|
-| Huffman Decode| 20 |3775ms  | 1721 Mb/s|           |
+| Huffman Decode| 20 |3765ms  | 1794 Mb/s|           |
 | tANS Encode   | 20 |8829ms  | 732  Mb/s|1.5000 to 1|
 | tANS Decode   | 20 |6415ms  | 1016 Mb/s|           |
 
-#Acknowledgements
+# Acknowledgements
+
 This couldn't have been made possible without the great works of 
 
 - Jarek Duda - The inventor of ANS based algorithms, and collector, most of his
