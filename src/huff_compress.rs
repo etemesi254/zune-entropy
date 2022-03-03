@@ -53,7 +53,6 @@ use crate::constants::{LIMIT, SMALL_CHUNK_SIZE};
 use crate::huff_bitstream::BitStreamWriter;
 use crate::utils::{histogram, Symbols};
 
-
 // Config parameter, large numbers use more memory
 // compress faster BUT hurts compression.
 // Smaller ones favour compression but hurt speed.
@@ -517,7 +516,6 @@ pub fn huff_compress<W: Write>(src: &[u8], dest: &mut W)
      *
      */
 
-
     // safety, if it goes above it can't be stored in the block.
     assert!(CHUNK_SIZE < 1 << 23);
 
@@ -566,7 +564,10 @@ pub fn huff_compress<W: Write>(src: &[u8], dest: &mut W)
             if log_enabled!(Trace)
             {
                 trace!("Compressed size : {}", compressed_ratio);
-                trace!("Ratio : {}", compressed_ratio as f32 / src_chunk.len() as f32);
+                trace!(
+                    "Ratio : {}",
+                    compressed_ratio as f32 / src_chunk.len() as f32
+                );
             }
             if compressed_ratio - 4096 > (src_chunk.len() as u32 * (u8::BITS))
             {
@@ -612,11 +613,15 @@ pub fn huff_compress<W: Write>(src: &[u8], dest: &mut W)
                 let entries = freq_counts.map(crate::utils::Symbols::to_u32);
 
                 encode_symbols(
-                    &mut buf, src_chunk,
+                    &mut buf,
+                    src_chunk,
                     &entries,
-                    dest, info_bit[0],
-                    &mut freq_counts, non_zero,
-                    code_lengths, last_sym,
+                    dest,
+                    info_bit[0],
+                    &mut freq_counts,
+                    non_zero,
+                    code_lengths,
+                    last_sym,
                 )
             }
         }

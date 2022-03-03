@@ -438,7 +438,8 @@ pub fn huff_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
 
             decompress_huff_inner(
                 huff_source,
-                &tbl, &offsets,
+                &tbl,
+                &offsets,
                 block_length as usize,
                 // write to uninitialized memory :)
                 dest.get_mut(start..).unwrap(),
@@ -457,4 +458,3 @@ pub fn huff_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
         src.read_exact(length.get_mut(0..3).unwrap()).unwrap();
     }
 }
-
