@@ -99,6 +99,42 @@ impl<'src> BitStreamReader<'src>
         // write to position
         *dest = (entry >> 8) as u8;
     }
+
+    #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
+    pub fn decode_single(&mut self, dest: &mut u8, table: &[u16; TABLE_SIZE])
+    {
+        /*
+         * Generate better code for CPUs supporting BMI2,
+         * this is a compile time constraint and should be enabled via
+         * RUSTFLAGS ="-C target-features=+bmi2" cargo build --release to enable it.
+         *
+         * Performance difference is about 90 Mb/s(1100 Mb/s vs 1010 Mb/s) better compared to  the decode_single one
+         * (AMD Ryzen 3600U)
+         *
+         * The main issue is that Rust spills values to memory even when not needed.
+         * forcing use of asm tells Rust to keep them in registers and not memory,
+         */
+        let entry = table[(self.peek_bits::<LIMIT>())];
+
+        unsafe {
+            use std::arch::asm;
+
+            // keep values in register Rust.
+            asm!(
+                // shrx instruction uses the lower 0-6 bits of the last(entry:r) register, that's why ther
+                // is no explicit masking
+                 "shrx {buf}, {buf}, {entry:r}", // self.buf >>= (entry & 0xFF);
+                 "sub {bits_left},{entry:l}", // self.bits_left -= (entry & 0xFF);
+
+                buf= inout(reg) self.buffer,
+                entry = in(reg_abcd) entry,
+                bits_left = inout(reg_byte) self.bits_left,
+
+            );
+        }
+        *dest = (entry >> 8) as u8;
+    }
+
     pub fn get_bits(&mut self, num_bits: u8) -> u64
     {
         let mask = (1_u64 << num_bits) - 1;
