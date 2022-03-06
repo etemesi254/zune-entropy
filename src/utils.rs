@@ -1,5 +1,6 @@
 //! Small function utilities for compression and decompression
 
+use std::io::{Read, Write};
 use crate::huff_decompress::LIMIT;
 
 pub const REVERSED_BITS: [u32; 1 << LIMIT] = reverse_bits();
@@ -18,7 +19,6 @@ pub struct Symbols
     /// Can represent two things
     /// 1. Histogram count
     /// 2. Actual Huffman code
-    /// 3. Code length in Huffman
     pub x: u32,
 }
 
@@ -33,6 +33,7 @@ impl Symbols
         // 8-19: code
         (REVERSED_BITS[self.x as usize] >> (16 - self.y)) << 8 | u32::from(self.y)
     }
+
 }
 
 /// Calculate the occurrences of a byte in a distribution
@@ -144,4 +145,81 @@ const fn reverse_bits() -> [u32; 1 << LIMIT]
         i += 1;
     }
     results
+}
+
+pub fn  write_uncompressed<W:Write>(buf:&[u8],dest:&mut W,is_last:bool){
+    let mut info_bit = [0];
+    // write info bit
+
+    // indicate it's uncompressed
+    info_bit[0] |= 1 << 7 | u8::from(is_last)<<5;
+
+    // write info bit
+    dest.write_all(&info_bit).unwrap();
+    // total block size, in little endian
+    dest.write_all(&buf.len().to_le_bytes()[0..3])
+        .expect("Could not write block size");
+    // write as uncompressed
+    dest.write_all(buf).unwrap();
+}
+
+
+pub fn  read_uncompressed<R:Read>(src:& mut R,block_length:u32,dest:&mut Vec<u8>){
+    // block was uncompressed
+    // assert that the above reserve actually worked
+    // read to the dest buffer
+    unsafe {
+        // a variation of vec::extend
+        let old_len = dest.len();
+        let new_len = old_len + block_length as usize;
+        // SAFETY:
+        //  1. New len must be equal to or less than capacity -> confirmed by the assert
+        //     statement
+        //  2. Elements between old_len-new_len must be initialized -> Done straight after
+        //     setting up the new length.
+        assert!(dest.capacity() >= new_len, "Internal error, report to repo");
+
+        dest.set_len(new_len);
+        // read_exact guarantees it will fill up buf, if it doesn't it will panic,
+        // hence the guarantees of the set len are met.
+        src.read_exact(&mut dest[old_len..new_len]).unwrap();
+
+    }
+}
+
+pub fn read_rle<R:Read>(src:&mut R,block_length:u32,dest:&mut Vec<u8>){
+    let mut rle = [0];
+    // read the byte
+    src.read_exact(&mut rle).unwrap();
+
+    let old_len = dest.len();
+    let new_len = old_len + block_length as usize;
+    // SAFETY:
+    //  1. New len must be equal to or less than capacity -> confirmed by the assert
+    //     statement
+    //  2. Elements between old_len-new_len must be initialized -> Done straight after
+    //     setting up the new length.
+    assert!(dest.capacity() >= new_len, "Internal error, report to repo");
+
+    unsafe {
+        dest.set_len(new_len);
+    }
+    // fill with rle
+    dest[old_len..new_len].fill(rle[0]);
+    // done
+}
+
+pub fn write_rle<W:Write>(src:&[u8],dest:&mut W,is_last:bool){
+
+    // RLE block
+    let mut info_bit = [0];
+    // Set 6'th bit to indicate this is an RLE block
+    info_bit[0] |= 1 << 6 | u8::from(is_last)<<5;
+    // write info bit
+    dest.write_all(&info_bit).unwrap();
+    // total block size, in little endian
+    dest.write_all(&src.len().to_le_bytes()[0..3])
+        .expect("Could not write block size");
+    // write a single byte.
+    dest.write_all(&[src[0]]).unwrap();
 }
