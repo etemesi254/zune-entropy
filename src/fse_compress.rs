@@ -1,30 +1,18 @@
 //! FSE compression.
 //!
 //! Format
-//!  1 Byte information byte.
-//!     7th bit ->  Compression type (0-> Huffman , 1-> FSE)
-//!
-//!   3 bytes -> Block size
-//!   2 bytes -> Header size
-//!   1 byte  ->
-//!         4 bits-> Maximum table log size
-//!         4 bits-> Log2 size of maximum state of symbol(used by `decode_header`)
-//!   n bytes -> Headers(sum of the above header size )
-//!
-//!   3 bytes -> Compressed block size.
-//!   n bytes -> Compressed data.
-//!
+//! See FSE.md docs for format
 //!
 use std::cmp::{max, min};
 use std::io::Write;
 
 use log::Level::Trace;
-use log::{log_enabled, trace};
+use log::{debug, log_enabled, trace};
 
 use crate::constants::{state_generator, MAX_TABLE_LOG, MIN_TABLE_LOG, TABLE_LOG, TABLE_SIZE};
 use crate::fse_bitstream::FseStreamWriter;
 use crate::huff_bitstream::BitStreamWriter;
-use crate::utils::{histogram, Symbols};
+use crate::utils::{histogram, Symbols, write_rle, write_uncompressed};
 
 const CHUNK_SIZE: usize = 1 << 17;
 
@@ -127,7 +115,6 @@ fn normalize_frequencies_fast(
             }
 
             // ensure that this operation at least reduces a slot(the +1)
-            // The division is turned to a shift (strength reduction), don't try optimizing it
             let v = min(((first.y - second.y) / THRESH0LD) + 1, excess_states);
 
             excess_states -= v;
@@ -226,6 +213,7 @@ fn generate_state_bits(freq_counts: &mut [Symbols; 256], non_zero: usize, table_
 
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
+
             #[cfg(not(target_feature = "lzcnt"))]
             {
                 // the |1 is because bsr instruction has undefined behaviour when src is zero.
@@ -255,7 +243,7 @@ fn generate_state_bits(freq_counts: &mut [Symbols; 256], non_zero: usize, table_
         compressibility += sym.x * hist;
         sym.x = (sym.x << MAX_TABLE_LOG) - (u32::from(sym.y) << (sym.x));
     }
-
+    // compressibility contains the theoretical bits that will be used to represent the symbols
     compressibility
 }
 /// Generate a pseudo state which we will use to spread symbols
@@ -405,7 +393,7 @@ fn write_headers<W: Write>(
      * bits=8 bits, now all states will be encoded in 8 bits
      */
 
-    let info_bit = 1 << 7 | u8::from(last_block) << 6;
+    let info_bit = 1 << 7| 1<<6 | u8::from(last_block) << 5;
 
     let chunks = symbols[non_zero..].chunks_exact(2);
 
@@ -466,13 +454,15 @@ fn write_headers<W: Write>(
     dest.write_all(&[info_bit]).unwrap();
     // write block size
     dest.write_all(&block_size.to_le_bytes()[0..3]).unwrap();
-    // header size
-    dest.write_all(&header_size.to_le_bytes()[0..2]).unwrap();
 
     // write number used to do state bits
     let compact_log = (table_log << 4) as u8;
     // + number for table log.
     dest.write_all(&[compact_log | state_bits]).unwrap();
+
+    // header size
+    dest.write_all(&header_size.to_le_bytes()[0..2]).unwrap();
+
     // write number of symbols
     dest.write_all(&[255 - (non_zero - 1) as u8]).unwrap();
 
@@ -649,6 +639,8 @@ pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W)
     // A lot of invariants won't work if this isn't obeyed
     assert!(TABLE_SIZE.is_power_of_two());
 
+    const THRESH0LD:u32 = 1024;
+
     let mut is_last = false;
 
     // start is our current pointer to where we start compressing from
@@ -677,6 +669,22 @@ pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W)
         let mut freq_counts = histogram(src_chunk);
         // sort by occurrences
         freq_counts.sort_unstable_by(|a, b| a.x.cmp(&b.x));
+        if freq_counts[255].x == src_chunk.len() as u32{
+            // rle block
+            debug!("Encountered RLE block, emitting as RLE");
+
+            write_rle(src_chunk,dest,is_last);
+
+            // read the next block
+            // Todo, replace with goto when it becomes stable
+            start = end;
+            // end increases either by chunk size or points to end of buffer.
+            end = min(end + CHUNK_SIZE, src.len());
+
+            src_chunk = &src[start..end];
+            // next block
+            continue;
+        }
         //find first non-zero element
         let non_zero = freq_counts.iter().position(|x| x.x != 0).unwrap_or(0);
 
@@ -686,14 +694,19 @@ pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W)
         // Generate actual bit codes for the states for symbols.
         // Do also the equivalent of detecting if this block is compressible.
         // returning how many bytes will be shaved off when we compress
-        let _compressibility = generate_state_bits(&mut freq_counts, non_zero, tbl_log);
+        let compressibility = generate_state_bits(&mut freq_counts, non_zero, tbl_log);
 
-        //  if compressibility + THRESH0LD > src.len() as u32
-        //{
+        if compressibility + THRESH0LD >( src_chunk.len() as u32* u8::BITS)
+        {
+            debug!("Block size:{}",src_chunk.len());
 
-        //  println!("not compressible,{:?},{:?}",compressibility,src.len());
-        //}
-        //else
+            debug!("Theoretical compression ratio:{}",compressibility as f32/src_chunk.len() as f32);
+
+            debug!("Emitting block as uncompressed");
+
+            write_uncompressed(src_chunk,dest,is_last);
+        }
+        else
         {
             let mut new_counts = [Symbols::default(); 256];
 
@@ -726,7 +739,6 @@ pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W)
                 &next_states, &next_states_offset,
                 &mut buf, dest);
         }
-
         // read the next block
         start = end;
         // end increases either by chunk size or points to end of buffer.

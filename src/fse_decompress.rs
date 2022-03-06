@@ -3,7 +3,7 @@ use std::io::Read;
 use crate::constants::{state_generator, TABLE_SIZE};
 use crate::fse_bitstream::FSEStreamReader;
 use crate::huff_bitstream::BitStreamReader;
-use crate::utils::Symbols;
+use crate::utils::{read_rle, read_uncompressed, Symbols};
 
 fn spread_symbols(
     freq_counts: &[Symbols; 256], tbl_log: usize, tbl_size: usize,
@@ -284,78 +284,99 @@ pub fn fse_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
 
     loop
     {
-        block_length = u32::from_le_bytes(length);
 
-        src.read_exact(&mut header_t).unwrap();
+        block_length = u32::from_le_bytes(length);
 
         if dest.capacity() <= (block_length as usize + dest.len())
         {
-            // no don't grow using armotized technique, this may become really big
             dest.reserve(block_length as usize);
         }
-
-        let header_size = u16::from_le_bytes(header_t);
-
-        src.read_exact(&mut state_bits).unwrap();
-
-        src.read_exact(&mut symbols_count).unwrap();
-
-        src.read_exact(&mut header[0..usize::from(header_size)])
-            .unwrap();
-
-        let tbl_log = state_bits[0] >> 4;
-
-        let tbl_size = 1 << tbl_log;
-
-        let symbols = read_headers(
-            &header[0..usize::from(header_size)],
-            symbols_count[0],
-            state_bits[0] & 0xF,
-        );
-        // reconstruct next_state
-        let next_state = spread_symbols(&symbols, tbl_log as usize, tbl_size);
-
-        src.read_exact(&mut compressed_size[0..3]).unwrap();
-
-        let compressed_length = (u32::from_le_bytes(compressed_size)) as usize;
-
-        src.read_exact(&mut source[0..compressed_length]).unwrap();
-
-        let start = dest.len();
-
-        let new_len = dest.len() + block_length as usize + 5;
-
-        unsafe { dest.set_len(dest.capacity()) };
-        // set length to be the capacity
-        if new_len > dest.capacity()
+        if (block_info[0] >> 6)  == 0b10
         {
-            let cap = dest.capacity();
-            dest.reserve_exact(new_len - cap);
+            
+            read_uncompressed(src,block_length,dest);
         }
-        unsafe { dest.set_len(new_len) };
+        else if (block_info[0] >> 6)  == 0b01
+        {
+            // RLE block
+            read_rle(src,block_length,dest);
+        }
+        else if (block_info[0]>>6)== 0b00
+        {
+            // huffman compressed block
+            panic!("Huffman compressed block passed to tANS decoder, internal error");
+        } else {
 
-        // Don't continue if we don't have capacity to create a new write
-        assert!(
-            new_len <= dest.capacity(),
-            "{},{}",
-            new_len,
-            dest.capacity()
-        );
+            src.read_exact(&mut state_bits).unwrap();
 
-        decode_symbols(
-            &source[0..compressed_length],
-            &next_state,
-            dest.get_mut(start..).unwrap(),
-            block_length as usize,
-        );
+            src.read_exact(&mut header_t).unwrap();
 
-        // we had to add a +5 length to allow for unused symbols to
-        // be added to the state,
-        // so do not forget to remove them since they contain dummy values.
-        unsafe { dest.set_len(new_len - 5) };
+            if dest.capacity() <= (block_length as usize + dest.len())
+            {
+                // no don't grow using amortized technique, this may become really big
+                dest.reserve(block_length as usize);
+            }
 
+            let header_size = u16::from_le_bytes(header_t);
+
+            src.read_exact(&mut symbols_count).unwrap();
+
+            src.read_exact(&mut header[0..usize::from(header_size)])
+                .unwrap();
+
+            let tbl_log = state_bits[0] >> 4;
+
+            let tbl_size = 1 << tbl_log;
+
+            let symbols = read_headers(
+                &header[0..usize::from(header_size)],
+                symbols_count[0],
+                state_bits[0] & 0xF,
+            );
+            // reconstruct next_state
+            let next_state = spread_symbols(&symbols, tbl_log as usize, tbl_size);
+
+            src.read_exact(&mut compressed_size[0..3]).unwrap();
+
+            let compressed_length = (u32::from_le_bytes(compressed_size)) as usize;
+
+            src.read_exact(&mut source[0..compressed_length]).unwrap();
+
+            let start = dest.len();
+
+            let new_len = dest.len() + block_length as usize + 5;
+
+            unsafe { dest.set_len(dest.capacity()) };
+            // set length to be the capacity
+            if new_len > dest.capacity()
+            {
+                let cap = dest.capacity();
+                dest.reserve_exact(new_len - cap);
+            }
+            unsafe { dest.set_len(new_len) };
+
+            // Don't continue if we don't have capacity to create a new write
+            assert!(
+                new_len <= dest.capacity(),
+                "{},{}",
+                new_len,
+                dest.capacity()
+            );
+
+            decode_symbols(
+                &source[0..compressed_length],
+                &next_state,
+                dest.get_mut(start..).unwrap(),
+                block_length as usize,
+            );
+
+            // we had to add a +5 length to allow for unused symbols to
+            // be added to the state,
+            // so do not forget to remove them since they contain dummy values.
+            unsafe { dest.set_len(new_len - 5) };
+        }
         // we reached the last block.
-        if (block_info[0] >> 6) & 1 == 1
+        if (block_info[0] >> 5) & 1 == 1
         {
             break;
         }
