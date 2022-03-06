@@ -1,5 +1,4 @@
 //! A bunch of really fast entropy coders
-#![feature(stdsimd)]
 #![allow(clippy::assertions_on_constants)]
 #![warn(clippy::perf, clippy::pedantic, clippy::perf)]
 #![allow(
