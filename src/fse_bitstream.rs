@@ -19,9 +19,8 @@
 //! they both write/read 8 bytes to/from memory , if it happens that the memory region is
 //! out of bounds, they will obviously be UB.
 
-
 use crate::constants::{MAX_TABLE_LOG, TABLE_SIZE};
-use crate::utils::Symbols;
+
 /// Compact FSE bit-stream writer.
 pub struct FseStreamWriter<'dest>
 {
@@ -69,25 +68,29 @@ impl<'dest> FseStreamWriter<'dest>
     #[inline(always)]
     #[allow(clippy::cast_sign_loss)]
     pub fn encode_symbol(
-        &mut self, symbol: u8, entries: &[Symbols; 256], next_states: &[u16; TABLE_SIZE],
+        &mut self, symbol: u8, entries: &[u64; 256], next_states: &[u16; TABLE_SIZE],
         curr_state: &mut u16,
     )
     {
+        const NUM_MASK: u64 = (1 << 31) - 1;
         let symbol = entries[usize::from(symbol)];
         // How number of bits evolves is a bit tricky..
-        let num_bits = ((symbol.x + u32::from(*curr_state)) >> MAX_TABLE_LOG) as u8;
+        let num_bits =
+            (((symbol & NUM_MASK) as u32 + u32::from(*curr_state)) >> MAX_TABLE_LOG) as u8;
 
         let mask = (1 << num_bits) - 1;
 
         let low_bits = *curr_state & mask;
 
         self.add_bits(num_bits, low_bits);
-        //
-
         // Determine next state
-        let offset = (*curr_state >> num_bits) as i16;
-
-        *curr_state = next_states[((symbol.z + offset) as usize & (TABLE_SIZE - 1))];
+        let offset = u64::from(*curr_state >> num_bits);
+        // Note:  this is depends on wraparound integer semantics
+        // if a platform doesn't have wraparound mathematics, this is UB
+        // The issue is that state can be deltaFindState can be less than 0.
+        // so converting it to u32 makes it to be a large integer, adding offset and `&` ing it
+        // gives the same value.
+        *curr_state = next_states[((symbol >> 32) + offset) as usize & (TABLE_SIZE - 1)];
     }
 
     /// Encode final values of states to the bitstream
@@ -317,5 +320,8 @@ impl<'src> FSEStreamReader<'src>
 
             (c1, c2, c3, c4, c5)
         }
+    }
+    pub fn get_position(&self) -> usize {
+        self.position - usize::from(self.bits_left>>3)
     }
 }

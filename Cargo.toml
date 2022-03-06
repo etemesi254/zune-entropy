@@ -21,9 +21,9 @@ rand = "0.8.4"
 #
 
 #
-[[bench]]
-name = "huffman_bench"
-harness = false
+#[[bench]]
+#name = "huffman_bench"
+#harness = false
 
 #
 #[[bench]]

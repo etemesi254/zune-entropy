@@ -112,7 +112,6 @@ fn spread_symbols(
     let ct = (tbl_size - 1) as u16;
     for sym in state_array.iter_mut().take(tbl_size)
     {
-
         let counter = slots[sym.z as usize];
 
         slots[sym.z as usize] += 1;
@@ -132,8 +131,6 @@ fn spread_symbols(
     // symbol     -> 0..8 bits    [sym.z]
     // num_bits   -> 8..16 bits.  [sym.x]
     // next_state -> 16..32 bits. [sym.y]
-
-    
 
     state_array.map(|x| u32::from(x.y) << 16 | x.x << 8 | ((x.z) as u32))
 }
@@ -284,29 +281,28 @@ pub fn fse_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
 
     loop
     {
-
         block_length = u32::from_le_bytes(length);
 
         if dest.capacity() <= (block_length as usize + dest.len())
         {
             dest.reserve(block_length as usize);
         }
-        if (block_info[0] >> 6)  == 0b10
+        if (block_info[0] >> 6) == 0b10
         {
-            
-            read_uncompressed(src,block_length,dest);
+            read_uncompressed(src, block_length, dest);
         }
-        else if (block_info[0] >> 6)  == 0b01
+        else if (block_info[0] >> 6) == 0b01
         {
             // RLE block
-            read_rle(src,block_length,dest);
+            read_rle(src, block_length, dest);
         }
-        else if (block_info[0]>>6)== 0b00
+        else if (block_info[0] >> 6) == 0b00
         {
             // huffman compressed block
             panic!("Huffman compressed block passed to tANS decoder, internal error");
-        } else {
-
+        }
+        else
+        {
             src.read_exact(&mut state_bits).unwrap();
 
             src.read_exact(&mut header_t).unwrap();

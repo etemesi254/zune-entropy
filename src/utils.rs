@@ -1,6 +1,7 @@
 //! Small function utilities for compression and decompression
 
 use std::io::{Read, Write};
+
 use crate::huff_decompress::LIMIT;
 
 pub const REVERSED_BITS: [u32; 1 << LIMIT] = reverse_bits();
@@ -8,8 +9,8 @@ pub const REVERSED_BITS: [u32; 1 << LIMIT] = reverse_bits();
 #[derive(Copy, Clone, Default, Debug)]
 pub struct Symbols
 {
-    // Symbol in Huffman
-    // Next state in FSE
+    /// Symbol in Huffman
+    /// Next state in FSE
     pub z: i16,
     /// Can represent two things
     /// 1. Code lengths in huffman
@@ -28,12 +29,16 @@ impl Symbols
     pub fn to_u32(self) -> u32
     {
         //
-        //
         // 0-8: code length
         // 8-19: code
         (REVERSED_BITS[self.x as usize] >> (16 - self.y)) << 8 | u32::from(self.y)
     }
-
+    pub fn to_u64(self) -> u64
+    {
+        // 0-32 sym.z
+        // 32-64 sym.x
+        u64::from(self.z as u32) << 32 | u64::from(self.x)
+    }
 }
 
 /// Calculate the occurrences of a byte in a distribution
@@ -147,12 +152,13 @@ const fn reverse_bits() -> [u32; 1 << LIMIT]
     results
 }
 
-pub fn  write_uncompressed<W:Write>(buf:&[u8],dest:&mut W,is_last:bool){
+pub fn write_uncompressed<W: Write>(buf: &[u8], dest: &mut W, is_last: bool)
+{
     let mut info_bit = [0];
     // write info bit
 
     // indicate it's uncompressed
-    info_bit[0] |= 1 << 7 | u8::from(is_last)<<5;
+    info_bit[0] |= 1 << 7 | u8::from(is_last) << 5;
 
     // write info bit
     dest.write_all(&info_bit).unwrap();
@@ -163,8 +169,8 @@ pub fn  write_uncompressed<W:Write>(buf:&[u8],dest:&mut W,is_last:bool){
     dest.write_all(buf).unwrap();
 }
 
-
-pub fn  read_uncompressed<R:Read>(src:& mut R,block_length:u32,dest:&mut Vec<u8>){
+pub fn read_uncompressed<R: Read>(src: &mut R, block_length: u32, dest: &mut Vec<u8>)
+{
     // block was uncompressed
     // assert that the above reserve actually worked
     // read to the dest buffer
@@ -183,11 +189,11 @@ pub fn  read_uncompressed<R:Read>(src:& mut R,block_length:u32,dest:&mut Vec<u8>
         // read_exact guarantees it will fill up buf, if it doesn't it will panic,
         // hence the guarantees of the set len are met.
         src.read_exact(&mut dest[old_len..new_len]).unwrap();
-
     }
 }
 
-pub fn read_rle<R:Read>(src:&mut R,block_length:u32,dest:&mut Vec<u8>){
+pub fn read_rle<R: Read>(src: &mut R, block_length: u32, dest: &mut Vec<u8>)
+{
     let mut rle = [0];
     // read the byte
     src.read_exact(&mut rle).unwrap();
@@ -209,12 +215,12 @@ pub fn read_rle<R:Read>(src:&mut R,block_length:u32,dest:&mut Vec<u8>){
     // done
 }
 
-pub fn write_rle<W:Write>(src:&[u8],dest:&mut W,is_last:bool){
-
+pub fn write_rle<W: Write>(src: &[u8], dest: &mut W, is_last: bool)
+{
     // RLE block
     let mut info_bit = [0];
     // Set 6'th bit to indicate this is an RLE block
-    info_bit[0] |= 1 << 6 | u8::from(is_last)<<5;
+    info_bit[0] |= 1 << 6 | u8::from(is_last) << 5;
     // write info bit
     dest.write_all(&info_bit).unwrap();
     // total block size, in little endian

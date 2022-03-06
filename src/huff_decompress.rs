@@ -334,20 +334,20 @@ pub fn huff_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
             dest.reserve(block_length as usize);
         }
         // 0b10 uncompressed
-        if (block_info[0] >> 6)  == 0b10
+        if (block_info[0] >> 6) == 0b10
         {
-            read_uncompressed(src,block_length,dest);
+            read_uncompressed(src, block_length, dest);
         }
-        else if (block_info[0] >> 6)  == 0b01
+        else if (block_info[0] >> 6) == 0b01
         {
             // RLE block
-            read_rle(src,block_length,dest);
+            read_rle(src, block_length, dest);
         }
-        else if (block_info[0]>>6) == 0b11
+        else if (block_info[0] >> 6) == 0b11
         {
             // fse compressed block
             panic!("FSE compressed block passed to Huffman decoder, internal error");
-    }
+        }
         else
         {
             // compressed block.

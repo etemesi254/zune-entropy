@@ -12,7 +12,7 @@ use log::{debug, log_enabled, trace};
 
 use crate::constants::{LIMIT, SMALL_CHUNK_SIZE};
 use crate::huff_bitstream::BitStreamWriter;
-use crate::utils::{histogram, Symbols, write_rle, write_uncompressed};
+use crate::utils::{histogram, write_rle, write_uncompressed, Symbols};
 
 // Config parameter, large numbers use more memory
 // compress faster BUT hurts compression.
@@ -48,7 +48,7 @@ use crate::utils::{histogram, Symbols, write_rle, write_uncompressed};
 const CHUNK_SIZE: usize = 1 << 17;
 
 /// Fast log2 approximation
-#[allow(clippy::cast_precision_loss,clippy::cast_sign_loss)]
+#[allow(clippy::cast_precision_loss, clippy::cast_sign_loss)]
 fn fast_log2(x: f32) -> f32
 {
     /*
@@ -68,7 +68,7 @@ fn fast_log2(x: f32) -> f32
 
     y - 124.225_52 - 1.498_030_3 * mx_f - 1.725_88 / (0.352_088_72 + mx_f)
 }
-#[allow(clippy::mut_range_bound,clippy::cast_sign_loss)]
+#[allow(clippy::mut_range_bound, clippy::cast_sign_loss)]
 fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
 {
     /*
@@ -535,12 +535,12 @@ pub fn huff_compress<W: Write>(src: &[u8], dest: &mut W)
             {
                 debug!("Emitting block as uncompressed\n");
                 // emit as uncompressed
-                write_uncompressed(&src_chunk,dest,is_last);
+                write_uncompressed(src_chunk, dest, is_last);
             }
             else if last_sym.x == src_chunk.len() as u32
             {
                 debug!("Emitting block as RLE\n");
-                write_rle(src_chunk,dest,is_last);
+                write_rle(src_chunk, dest, is_last);
             }
             else
             {
