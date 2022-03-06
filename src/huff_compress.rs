@@ -1,46 +1,7 @@
 //! Huffman Compression algorithm
 //!
-//!  # Format
-//! 2.  Block information (specific to each block)
 //!
-//!- 1 byte - Block information
-//! Block information is in order, I.e you can't have an uncompressed
-//! and RLE block at the same time
-//!     - 7th bit -> Huffman or FSE( 0-> Huffman, 1-> FSE).
-//!     - 6th bit-> last block ?
-//!     - 5th bit -> Uncompressed?
-//!     - 4th bit -> RLE?
-//!
-//!
-//! - 3 bytes - Total Block size.(Little Endian).
-//!
-//! - 10 bytes jump table (Little Endian)
-//!
-//!     2 bytes per jump table size.
-//!
-//!     Cannot go above 65536(each jump table)
-//!
-//!- 10 bytes - Code lengths for symbols
-//!  - There can be no symbol with code length 0
-//!    code_length\[i\] represents codes of length i+1,
-//!    so code_length\[9\] == codes of length 11
-//!
-//!- n bytes - Sum of the code lengths give the total number of
-//!     symbols in ascending order.
-//! - Maximum amount of huffman header is 266 bytes(10 for code lengths, 255 for codes)
-//!
-//! Actual compressed data for stream 1.
-//!
-//! # 3. Huffman Compressed notes
-//! Huffman bit-streams are written in Little Endian order and are bit-reversed.
-//!
-//! The headers are arranged in MSB order and their canonical code length (see `generate_code`) are
-//! bit-reversed both by the encoder and the decoder(Bit reversal code is found in utils.rs just a large
-//! array)
-//! Do note that we might not compress data if it doesn't make sense to compress it
-//! This is handled transparently and requires no effect from the calling function
-//!
-//! More on the library inner workings are found on `huff_compress`
+//! For format , see Huffman.md
 //!
 use std::cmp::min;
 use std::convert::TryInto;
@@ -51,7 +12,7 @@ use log::{debug, log_enabled, trace};
 
 use crate::constants::{LIMIT, SMALL_CHUNK_SIZE};
 use crate::huff_bitstream::BitStreamWriter;
-use crate::utils::{histogram, Symbols};
+use crate::utils::{histogram, Symbols, write_rle, write_uncompressed};
 
 // Config parameter, large numbers use more memory
 // compress faster BUT hurts compression.
@@ -559,7 +520,7 @@ pub fn huff_compress<W: Write>(src: &[u8], dest: &mut W)
                 // we reached the end,
                 is_last = true;
                 // indicate block is the last block
-                info_bit[0] |= 1 << 6;
+                info_bit[0] |= 1 << 5;
             }
 
             if log_enabled!(Trace)
@@ -572,37 +533,14 @@ pub fn huff_compress<W: Write>(src: &[u8], dest: &mut W)
             }
             if compressed_ratio - 4096 > (src_chunk.len() as u32 * (u8::BITS))
             {
-                debug!("Block will not be compressed, emitting as uncompressed");
-
-                // encoding didn't work, (codes were assigned a longer distribution of lengths, probably
-                // incompressible data.
-                // set bit as uncompressed
-
-                // indicate it's uncompressed
-                info_bit[0] |= 1 << 5;
-
-                // write info bit
-                dest.write_all(&info_bit).unwrap();
-                // total block size, in little endian
-                dest.write_all(&src_chunk.len().to_le_bytes()[0..3])
-                    .expect("Could not write block size");
-
-                // write as uncompressed
-                dest.write_all(src).unwrap();
+                debug!("Emitting block as uncompressed\n");
+                // emit as uncompressed
+                write_uncompressed(&src_chunk,dest,is_last);
             }
             else if last_sym.x == src_chunk.len() as u32
             {
-                // RLE block
-
-                // Set 4'th bit to indicate this is an RLE block
-                info_bit[0] |= 1 << 4;
-                // write info bit
-                dest.write_all(&info_bit).unwrap();
-                // total block size, in little endian
-                dest.write_all(&src_chunk.len().to_le_bytes()[0..3])
-                    .expect("Could not write block size");
-                // write a single byte.
-                dest.write_all(&[src_chunk[0]]).unwrap();
+                debug!("Emitting block as RLE\n");
+                write_rle(src_chunk,dest,is_last);
             }
             else
             {

@@ -4,7 +4,7 @@ use std::io::Read;
 
 pub use crate::constants::LIMIT;
 use crate::huff_bitstream::BitStreamReader;
-use crate::utils::REVERSED_BITS;
+use crate::utils::{read_rle, read_uncompressed, REVERSED_BITS};
 
 pub fn build_tree(table: &mut [u16; 1 << LIMIT], code_lengths: &[u8; LIMIT + 1], symbols: &[u8])
 {
@@ -333,51 +333,21 @@ pub fn huff_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
         {
             dest.reserve(block_length as usize);
         }
-        if (block_info[0] >> 5) & 1 == 1
+        // 0b10 uncompressed
+        if (block_info[0] >> 6)  == 0b10
         {
-            // block was uncompressed
-            // assert that the above reserve actually worked
-            // read to the dest buffer
-            unsafe {
-                // a variation of vec::extend
-                let old_len = dest.len();
-                let new_len = old_len + block_length as usize;
-                // SAFETY:
-                //  1. New len must be equal to or less than capacity -> confirmed by the assert
-                //     statement
-                //  2. Elements between old_len-new_len must be initialized -> Done straight after
-                //     setting up the new length.
-                assert!(dest.capacity() >= new_len, "Internal error, report to repo");
-
-                dest.set_len(new_len);
-                // read_exact guarantees it will fill up buf, if it doesn't it will panic,
-                // hence the guarantees of the set len are met.
-                src.read_exact(&mut dest[old_len..new_len]).unwrap();
-            }
+            read_uncompressed(src,block_length,dest);
         }
-        else if (block_info[0] >> 4) & 1 == 1
+        else if (block_info[0] >> 6)  == 0b01
         {
             // RLE block
-            let mut rle = [0];
-            // read the byte
-            src.read_exact(&mut rle).unwrap();
-
-            let old_len = dest.len();
-            let new_len = old_len + block_length as usize;
-            // SAFETY:
-            //  1. New len must be equal to or less than capacity -> confirmed by the assert
-            //     statement
-            //  2. Elements between old_len-new_len must be initialized -> Done straight after
-            //     setting up the new length.
-            assert!(dest.capacity() >= new_len, "Internal error, report to repo");
-
-            unsafe {
-                dest.set_len(new_len);
-            }
-            // fill with rle
-            dest[old_len..new_len].fill(rle[0]);
-            // done
+            read_rle(src,block_length,dest);
         }
+        else if (block_info[0]>>6) == 0b11
+        {
+            // fse compressed block
+            panic!("FSE compressed block passed to Huffman decoder, internal error");
+    }
         else
         {
             // compressed block.
@@ -447,7 +417,7 @@ pub fn huff_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
         }
         // top bit in block info indicates if block is the last
         // block.
-        if (block_info[0] >> 6 & 1) == 1
+        if (block_info[0] >> 5 & 1) == 1
         {
             // end of block
             break;
