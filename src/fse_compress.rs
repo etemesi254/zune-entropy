@@ -18,7 +18,6 @@ const CHUNK_SIZE: usize = 1 << 17;
 
 const SIZE: usize = 25;
 
-
 const THRESH0LD: u32 = 1024;
 
 ///
@@ -479,7 +478,8 @@ fn max_log(src_size: usize) -> usize
 
     max(min(MAX_TABLE_LOG, high_bits as usize), MIN_TABLE_LOG)
 }
-fn encode_symbols<W: Write>(
+#[inline(always)]
+fn encode_symbols_fallback<W: Write>(
     src: &[u8], common_symbol: i16, symbols: &mut [Symbols; 256], table_size: usize,
     next_states: &[u16; TABLE_SIZE], next_states_offset: &[i32; 256], buf: &mut [u8], dest: &mut W,
 )
@@ -611,6 +611,53 @@ fn encode_symbols<W: Write>(
     }
 }
 
+#[inline(always)]
+fn encode_symbols<W: Write>(
+    src: &[u8], common_symbol: i16, symbols: &mut [Symbols; 256], table_size: usize,
+    next_states: &[u16; TABLE_SIZE], next_states_offset: &[i32; 256], buf: &mut [u8], dest: &mut W,
+)
+{
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if is_x86_feature_detected!("bmi2")
+        {
+            return unsafe {
+                #[rustfmt::skip]
+                    encode_symbols_bmi(
+                    src, common_symbol,
+                    symbols, table_size, next_states,
+                    next_states_offset,
+                    buf, dest,
+                );
+            };
+        }
+    }
+    #[rustfmt::skip]
+        encode_symbols_fallback(
+        src, common_symbol,
+        symbols, table_size,
+        next_states, next_states_offset,
+        buf, dest);
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "bmi2")]
+unsafe fn encode_symbols_bmi<W: Write>(
+    src: &[u8], common_symbol: i16, symbols: &mut [Symbols; 256], table_size: usize,
+    next_states: &[u16; TABLE_SIZE], next_states_offset: &[i32; 256], buf: &mut [u8], dest: &mut W,
+)
+{
+    encode_symbols_fallback(
+        src,
+        common_symbol,
+        symbols,
+        table_size,
+        next_states,
+        next_states_offset,
+        buf,
+        dest,
+    )
+}
 pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W)
 {
     /*
@@ -643,7 +690,6 @@ pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W)
     assert!(TABLE_LOG <= MAX_TABLE_LOG);
     // A lot of invariants won't work if this isn't obeyed
     assert!(TABLE_SIZE.is_power_of_two());
-
 
     let mut is_last = false;
 

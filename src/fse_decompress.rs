@@ -137,6 +137,30 @@ fn spread_symbols(
 
 fn decode_symbols(src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block_size: usize)
 {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        unsafe {
+            if is_x86_feature_detected!("bmi2")
+            {
+                return decode_symbols_bmi(src, states, dest, block_size);
+            }
+        }
+    }
+    decode_symbols_fallback(src, states, dest, block_size);
+}
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "bmi2")]
+unsafe fn decode_symbols_bmi(
+    src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block_size: usize,
+)
+{
+    return decode_symbols_fallback(src, states, dest, block_size);
+}
+#[inline(always)]
+fn decode_symbols_fallback(
+    src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block_size: usize,
+)
+{
     const SIZE: usize = 25;
     let mut stream = FSEStreamReader::new(src);
 

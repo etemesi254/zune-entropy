@@ -285,7 +285,7 @@ impl<'src> FSEStreamReader<'src>
         *dest = (next_state & 0xFF) as u8;
 
         // number of bits
-        let num_bits = ((next_state >> 8) & 255) as u8;
+        let num_bits = ((next_state >> 8) & 0xFF) as u8;
 
         let low_bits = self.get_bits(num_bits);
 
@@ -321,7 +321,8 @@ impl<'src> FSEStreamReader<'src>
             (c1, c2, c3, c4, c5)
         }
     }
-    pub fn get_position(&self) -> usize {
-        self.position - usize::from(self.bits_left>>3)
+    pub fn _get_position(&self) -> usize
+    {
+        self.position - usize::from(self.bits_left >> 3)
     }
 }
