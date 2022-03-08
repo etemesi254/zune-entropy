@@ -25,5 +25,6 @@ pub fn state_generator(num_states: usize) -> usize
      *  of (num_states >> 1) | (num_states>>3) | 3 (fse/xpack)
      *  or probably use a different distribution heuristic.
      */
-    (num_states >> 2) | (num_states >> 3) | 1
+    const PHI: f32 = 1.618_034;
+    (PHI * num_states as f32) as usize | 1
 }
