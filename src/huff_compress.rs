@@ -259,8 +259,59 @@ fn generate_codes(symbols: &mut [Symbols; 256], non_zero: usize) -> [u8; LIMIT]
 
     code_lengths
 }
+
 /// Encode symbols for the Huffman Stream
 fn encode_symbols<W: Write>(
+    buf: &mut [u8], src_chunk: &[u8], entries: &[u32; 256], dest: &mut W, info_bit: u8,
+    freq_counts: &mut [Symbols; 256], non_zero: usize, code_lengths: [u8; 11], last_sym: Symbols,
+)
+{
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if is_x86_feature_detected!("bmi2")
+        {
+            return unsafe {
+                #[rustfmt::skip]
+                encode_symbols_bmi2(
+                    buf, src_chunk,
+                    entries, dest,
+                    info_bit, freq_counts,
+                    non_zero, code_lengths,
+                    last_sym,
+                );
+            };
+        }
+    }
+    #[rustfmt::skip]
+        encode_symbols_fallback(buf,src_chunk,entries
+                                ,dest,info_bit,
+                                freq_counts,non_zero,
+                                code_lengths,last_sym);
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "bmi2")]
+unsafe fn encode_symbols_bmi2<W: Write>(
+    buf: &mut [u8], src_chunk: &[u8], entries: &[u32; 256], dest: &mut W, info_bit: u8,
+    freq_counts: &mut [Symbols; 256], non_zero: usize, code_lengths: [u8; 11], last_sym: Symbols,
+)
+{
+    return encode_symbols_fallback(
+        buf,
+        src_chunk,
+        entries,
+        dest,
+        info_bit,
+        freq_counts,
+        non_zero,
+        code_lengths,
+        last_sym,
+    );
+}
+
+/// Encode symbols for the Huffman Stream
+#[inline(always)]
+fn encode_symbols_fallback<W: Write>(
     buf: &mut [u8], src_chunk: &[u8], entries: &[u32; 256], dest: &mut W, info_bit: u8,
     freq_counts: &mut [Symbols; 256], non_zero: usize, code_lengths: [u8; 11], last_sym: Symbols,
 )

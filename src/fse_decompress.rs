@@ -156,11 +156,15 @@ unsafe fn decode_symbols_bmi(
 {
     return decode_symbols_fallback(src, states, dest, block_size);
 }
+
 #[inline(always)]
 fn decode_symbols_fallback(
     src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block_size: usize,
 )
 {
+    /*
+     * Decode the FSE bitstream.
+     */
     const SIZE: usize = 25;
     let mut stream = FSEStreamReader::new(src);
 

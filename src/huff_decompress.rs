@@ -70,8 +70,35 @@ pub fn build_tree(table: &mut [u16; 1 << LIMIT], code_lengths: &[u8; LIMIT + 1],
         code *= 2;
     }
 }
+fn decode_symbols(
+    buf: &[u8], entries: &[u16; 1 << LIMIT], offsets: &[usize; 5], block_size: usize,
+    dest: &mut [u8],
+)
+{
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            unsafe {
+                if is_x86_feature_detected!("bmi2")
+                {
+                    return decode_symbols_bmi2(buf, entries, offsets, block_size,dest);
+                }
+            }
+        }
+    decode_symbols_fallback(buf, entries, offsets, block_size,dest);
+}
 
-fn decompress_huff_inner(
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "bmi2")]
+unsafe fn decode_symbols_bmi2(
+    buf: &[u8], entries: &[u16; 1 << LIMIT], offsets: &[usize; 5], block_size: usize,
+    dest: &mut [u8],
+)
+{
+    decode_symbols_fallback(buf, entries, offsets, block_size,dest);
+}
+
+#[inline(always)]
+fn decode_symbols_fallback(
     buf: &[u8], entries: &[u16; 1 << LIMIT], offsets: &[usize; 5], block_size: usize,
     dest: &mut [u8],
 )
@@ -406,7 +433,7 @@ pub fn huff_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
             // 2. The assert above ensures the new len is inside the capacity of the vector.
             unsafe { dest.set_len(new_len) };
 
-            decompress_huff_inner(
+            decode_symbols(
                 huff_source,
                 &tbl,
                 &offsets,
