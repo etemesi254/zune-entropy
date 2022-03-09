@@ -199,7 +199,14 @@ fn decode_symbols_fallback(
         decode_five!(initial, 0);
     }
 
-    let start = block_size - rounded_down;
+
+    let mut start = block_size - rounded_down;
+
+    if start == 0 && block_size % 10 == 0
+    { 
+        // blocks divisible by 10 are a sure hell
+        start = 5;
+    }
     // now dest is aligned to a 5 byte boundary
     // let's goooooo
     let chunks = dest.get_mut(start..).unwrap().chunks_exact_mut(SIZE);
@@ -230,7 +237,6 @@ fn decode_symbols_fallback(
             decode_five!(chunk, 0);
         }
     }
-
     dest[0..start].copy_from_slice(&initial[5 - start..]);
 }
 fn read_headers(buf: &[u8], symbol_count: u8, state_bits: u8) -> [Symbols; 256]
@@ -261,6 +267,7 @@ fn read_headers(buf: &[u8], symbol_count: u8, state_bits: u8) -> [Symbols; 256]
             y: state,
             x: 0,
         };
+
     }
 
     if (symbol_count & 1) != 0
@@ -277,7 +284,9 @@ fn read_headers(buf: &[u8], symbol_count: u8, state_bits: u8) -> [Symbols; 256]
             y: state,
             x: 0,
         };
+
     }
+
     symbols
 }
 pub fn fse_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
