@@ -72,7 +72,8 @@ impl<'dest> FseStreamWriter<'dest>
         curr_state: &mut u16,
     )
     {
-        const NUM_MASK: u64 = (1 << 31) - 1;
+        const NUM_MASK: u64 = (1 << 32) - 1;
+
         let symbol = entries[usize::from(symbol)];
         // How number of bits evolves is a bit tricky..
         let num_bits =
@@ -90,7 +91,7 @@ impl<'dest> FseStreamWriter<'dest>
         // The issue is that state can be deltaFindState can be less than 0.
         // so converting it to u32 makes it to be a large integer, adding offset and `&` ing it
         // gives the same value.
-        *curr_state = next_states[((symbol >> 32) + offset) as usize & (TABLE_SIZE - 1)];
+        *curr_state = next_states[(symbol >> 32).wrapping_add(offset) as usize & (TABLE_SIZE - 1)];
     }
 
     /// Encode final values of states to the bitstream
