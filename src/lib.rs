@@ -4,11 +4,15 @@
 #![allow(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
-    clippy::inline_always
+    clippy::inline_always,
+    clippy::cast_sign_loss,
+    clippy::too_many_arguments,
+    clippy::cast_precision_loss
 )]
-extern crate core;
 
 mod constants;
+
+mod errors;
 
 mod fse_bitstream;
 mod huff_bitstream;
