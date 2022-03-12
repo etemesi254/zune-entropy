@@ -22,6 +22,9 @@ This information is shared by the huffman section.
 
 A  decoder must ensure that the first bits are 11 to ensure this is a valid FSE block.
 
+A decoder should be able to handle different blocks inside it,
+e.g a FSE decoder can handle decoding of RLE and uncompressed block but not Huffman block.
+
 2. **3 bytes** - Block size
 
 This indicates the total length of the symbols in this block, the set is 132kb(2^17) but can be anything between 
