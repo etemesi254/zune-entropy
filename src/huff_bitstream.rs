@@ -158,18 +158,6 @@ impl<'src> BitStreamReader<'src>
 
         self.position - (usize::from(self.bits_left >> 3)) == self.src.len()
     }
-    /// Get current position of the inner buffer
-    pub fn get_position(&self) -> usize
-    {
-        // take into account the bytes not consumed in the current
-        // bitstream.
-        self.position - (usize::from(self.bits_left >> 3))
-    }
-    /// Get the length  of the inner buffer
-    pub fn get_src_len(&self) -> usize
-    {
-        self.src.len()
-    }
 }
 
 /// A compact bit writer for the Huffman encoding.

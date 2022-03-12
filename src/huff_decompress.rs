@@ -3,10 +3,13 @@
 use std::io::Read;
 
 pub use crate::constants::LIMIT;
+use crate::errors::EntropyErrors;
 use crate::huff_bitstream::BitStreamReader;
 use crate::utils::{read_rle, read_uncompressed, REVERSED_BITS};
 
-pub fn build_tree(table: &mut [u16; 1 << LIMIT], code_lengths: &[u8; LIMIT + 1], symbols: &[u8])
+pub fn build_tree(
+    table: &mut [u16; 1 << LIMIT], code_lengths: &[u8; LIMIT + 1], symbols: &[u8],
+) -> Result<(), EntropyErrors>
 {
     /*
      * Build a Huffman tree from the code and the code lengths.
@@ -66,25 +69,32 @@ pub fn build_tree(table: &mut [u16; 1 << LIMIT], code_lengths: &[u8; LIMIT + 1],
             code += 1;
         }
         // do not go one code length higher
+        if code > 1 << i
+        {
+            return Err(EntropyErrors::CorruptHeader(
+                "Code length above expected code".to_string(),
+            ));
+        }
         assert!(code <= 1 << i);
         code *= 2;
     }
+    Ok(())
 }
 fn decode_symbols(
     buf: &[u8], entries: &[u16; 1 << LIMIT], offsets: &[usize; 5], block_size: usize,
     dest: &mut [u8],
-)
+) -> Result<(), EntropyErrors>
 {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        {
-            unsafe {
-                if is_x86_feature_detected!("bmi2")
-                {
-                    return decode_symbols_bmi2(buf, entries, offsets, block_size,dest);
-                }
+    {
+        unsafe {
+            if is_x86_feature_detected!("bmi2")
+            {
+                return decode_symbols_bmi2(buf, entries, offsets, block_size, dest);
             }
         }
-    decode_symbols_fallback(buf, entries, offsets, block_size,dest);
+    }
+    decode_symbols_fallback(buf, entries, offsets, block_size, dest)
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -92,16 +102,16 @@ fn decode_symbols(
 unsafe fn decode_symbols_bmi2(
     buf: &[u8], entries: &[u16; 1 << LIMIT], offsets: &[usize; 5], block_size: usize,
     dest: &mut [u8],
-)
+) -> Result<(), EntropyErrors>
 {
-    decode_symbols_fallback(buf, entries, offsets, block_size,dest);
+    decode_symbols_fallback(buf, entries, offsets, block_size, dest)
 }
 
 #[inline(always)]
 fn decode_symbols_fallback(
     buf: &[u8], entries: &[u16; 1 << LIMIT], offsets: &[usize; 5], block_size: usize,
     dest: &mut [u8],
-)
+) -> Result<(), EntropyErrors>
 {
     /*
      * The difference with compress_huff are small but subtle hence deserve their
@@ -277,64 +287,44 @@ fn decode_symbols_fallback(
     // All bytes were decoded.
     // min_pos contains bytes for stream 1-4, last pos contains bytes
     // decoded for stream 5, they should be equal to the end.
-    assert_eq!(
-        (min_pos * 4) + last_pos,
-        block_size,
-        "Not all bytes were decoded, internal error"
-    );
+    if (min_pos * 4) + last_pos != block_size
+    {
+        return Err(EntropyErrors::CorruptStream(format!(
+            "Not all bytes were decoded,expected:{},decoded:{}",
+            block_size,
+            (min_pos * 4) + last_pos
+        )));
+    }
 
     // check that no stream read more data than needed
-    assert!(
-        stream1.check_final(),
-        "Stream 1 was possibly corrupted, position:{},length:{}",
-        stream1.get_position(),
-        stream1.get_src_len()
-    );
-
-    assert!(
-        stream2.check_final(),
-        "Stream 2 was possibly corrupted, current position:{},expected position:{}",
-        stream2.get_position(),
-        stream2.get_src_len()
-    );
-
-    assert!(
-        stream3.check_final(),
-        "Stream 3 was possibly corrupted, current position:{},expected position:{}",
-        stream3.get_position(),
-        stream3.get_src_len()
-    );
-
-    assert!(
-        stream4.check_final(),
-        "Stream 4 was possibly corrupted, current position:{},expected position:{}",
-        stream4.get_position(),
-        stream4.get_src_len()
-    );
-
-    assert!(
-        stream5.check_final(),
-        "Stream 5 was possibly corrupted, current position:{},expected position:{}",
-        stream5.get_position(),
-        stream5.get_src_len()
-    );
+    if !stream1.check_final()
+        | !stream2.check_final()
+        | !stream3.check_final()
+        | !stream4.check_final()
+        | !stream5.check_final()
+    {
+        return Err(EntropyErrors::CorruptStream(format!(
+            "A stream  was possibly corrupted, integrity of data is compromised",
+        )));
+    }
     //everything is good, we won Mr Stark.
+    Ok(())
 }
 /// Read Huffman Compressed data from src and write into dest
 ///
 /// Caveats to understand for dest
 /// we will write from `dest.len()`  going forward, after decompression
 /// is done , dest.len() will contain uncompressed data
-pub fn huff_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
+pub fn huff_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>) -> Result<(), EntropyErrors>
 {
     // read block information
     let mut block_info = [0];
 
-    src.read_exact(&mut block_info).unwrap();
+    src.read_exact(&mut block_info)?;
 
     let mut length = [0, 0, 0, 0];
     // read the length
-    src.read_exact(&mut length[0..3]).unwrap();
+    src.read_exact(&mut length[0..3])?;
 
     let mut block_length = u32::from_le_bytes(length);
 
@@ -373,14 +363,14 @@ pub fn huff_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
         else if (block_info[0] >> 6) == 0b11
         {
             // fse compressed block
-            panic!("FSE compressed block passed to Huffman decoder, internal error");
+            panic!("FSE block encountered where Huffman Was expected");
         }
         else
         {
             // compressed block.
 
             // read jump table
-            src.read_exact(&mut jump_table).unwrap();
+            src.read_exact(&mut jump_table)?;
 
             // two bytes per jump table, stored in little endian form.
             let tbl1 = u32::from(jump_table[0]) + (u32::from(jump_table[1]) << 8);
@@ -397,18 +387,24 @@ pub fn huff_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
             let offsets = [tbl1, tbl2, tbl3, tbl4, end].map(|x| x as usize);
 
             // read code lengths
-            src.read_exact(&mut code_lengths[1..]).unwrap();
+            src.read_exact(&mut code_lengths[1..])?;
 
             let codes = code_lengths.iter().map(|x| *x as usize).sum::<usize>();
+            if codes > 256
+            {
+                return Err(EntropyErrors::CorruptHeader(
+                    "Code lengths are not less than 256".to_string(),
+                ));
+            }
             // read symbols
-            src.read_exact(&mut symbols[0..codes]).unwrap();
+            src.read_exact(&mut symbols[0..codes])?;
 
             // Build the Huffman tree
-            build_tree(&mut tbl, &code_lengths, &symbols);
+            build_tree(&mut tbl, &code_lengths, &symbols)?;
 
             let huff_source = &mut source[0..end as usize];
 
-            src.read_exact(huff_source).unwrap();
+            src.read_exact(huff_source)?;
             // new length
             let start = dest.len();
 
@@ -440,7 +436,7 @@ pub fn huff_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
                 block_length as usize,
                 // write to uninitialized memory :)
                 dest.get_mut(start..).unwrap(),
-            );
+            )?;
         }
         // top bit in block info indicates if block is the last
         // block.
@@ -450,8 +446,9 @@ pub fn huff_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
             break;
         }
         // not last block, pull in more bytes.
-        src.read_exact(&mut block_info).unwrap();
+        src.read_exact(&mut block_info)?;
         // read the length for the next iteration
-        src.read_exact(length.get_mut(0..3).unwrap()).unwrap();
+        src.read_exact(&mut length[0..3])?;
     }
+    Ok(())
 }

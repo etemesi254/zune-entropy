@@ -11,6 +11,7 @@ use log::Level::Trace;
 use log::{debug, log_enabled, trace};
 
 use crate::constants::{LIMIT, SMALL_CHUNK_SIZE};
+use crate::errors::EntropyErrors;
 use crate::huff_bitstream::BitStreamWriter;
 use crate::utils::{histogram, write_rle, write_uncompressed, Symbols};
 
@@ -261,52 +262,49 @@ fn generate_codes(symbols: &mut [Symbols; 256], non_zero: usize) -> [u8; LIMIT]
 }
 
 /// Encode symbols for the Huffman Stream
+#[rustfmt::skip]
 fn encode_symbols<W: Write>(
     buf: &mut [u8], src_chunk: &[u8], entries: &[u32; 256], dest: &mut W, info_bit: u8,
     freq_counts: &mut [Symbols; 256], non_zero: usize, code_lengths: [u8; 11], last_sym: Symbols,
-)
+)->Result<(),EntropyErrors>
 {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         if is_x86_feature_detected!("bmi2")
         {
             return unsafe {
-                #[rustfmt::skip]
-                encode_symbols_bmi2(
-                    buf, src_chunk,
-                    entries, dest,
-                    info_bit, freq_counts,
-                    non_zero, code_lengths,
-                    last_sym,
-                );
+                    encode_symbols_bmi2(
+                        buf, src_chunk,
+                        entries, dest,
+                        info_bit, freq_counts,
+                        non_zero, code_lengths,
+                        last_sym,
+                    )
             };
         }
     }
-    #[rustfmt::skip]
         encode_symbols_fallback(buf,src_chunk,entries
                                 ,dest,info_bit,
                                 freq_counts,non_zero,
-                                code_lengths,last_sym);
+                                code_lengths,last_sym)
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "bmi2")]
+#[rustfmt::skip]
+
 unsafe fn encode_symbols_bmi2<W: Write>(
     buf: &mut [u8], src_chunk: &[u8], entries: &[u32; 256], dest: &mut W, info_bit: u8,
     freq_counts: &mut [Symbols; 256], non_zero: usize, code_lengths: [u8; 11], last_sym: Symbols,
-)
+)->Result<(),EntropyErrors>
 {
-    return encode_symbols_fallback(
-        buf,
-        src_chunk,
-        entries,
-        dest,
-        info_bit,
-        freq_counts,
-        non_zero,
-        code_lengths,
-        last_sym,
-    );
+        encode_symbols_fallback(
+            buf, src_chunk,
+            entries, dest,
+            info_bit, freq_counts,
+            non_zero, code_lengths,
+            last_sym,
+        )
 }
 
 /// Encode symbols for the Huffman Stream
@@ -314,7 +312,7 @@ unsafe fn encode_symbols_bmi2<W: Write>(
 fn encode_symbols_fallback<W: Write>(
     buf: &mut [u8], src_chunk: &[u8], entries: &[u32; 256], dest: &mut W, info_bit: u8,
     freq_counts: &mut [Symbols; 256], non_zero: usize, code_lengths: [u8; 11], last_sym: Symbols,
-)
+) -> Result<(), EntropyErrors>
 {
     const START: usize = (CHUNK_SIZE + 4) / 5;
 
@@ -410,29 +408,22 @@ fn encode_symbols_fallback<W: Write>(
     }
     // write headers
     {
-        dest.write_all(&[info_bit]).unwrap();
+        dest.write_all(&[info_bit])?;
         // total block size, in little endian
-        dest.write_all(&src_chunk.len().to_le_bytes()[0..3])
-            .expect("Could not write block size");
+        dest.write_all(&src_chunk.len().to_le_bytes()[0..3])?;
 
         // add jump tables ->10 bytes
-        dest.write_all(&stream1.get_position().to_le_bytes()[0..2])
-            .expect("Could not write jump table info");
+        dest.write_all(&stream1.get_position().to_le_bytes()[0..2])?;
 
-        dest.write_all(&stream2.get_position().to_le_bytes()[0..2])
-            .expect("Could not write jump table info");
+        dest.write_all(&stream2.get_position().to_le_bytes()[0..2])?;
 
-        dest.write_all(&stream3.get_position().to_le_bytes()[0..2])
-            .expect("Could not write jump table info");
+        dest.write_all(&stream3.get_position().to_le_bytes()[0..2])?;
 
-        dest.write_all(&stream4.get_position().to_le_bytes()[0..2])
-            .expect("Could not write jump table info");
+        dest.write_all(&stream4.get_position().to_le_bytes()[0..2])?;
 
-        dest.write_all(&stream5.get_position().to_le_bytes()[0..2])
-            .expect("Could not write jump table info");
+        dest.write_all(&stream5.get_position().to_le_bytes()[0..2])?;
         // code lengths
-        dest.write_all(&code_lengths)
-            .expect("Could not write code lengths to buffer");
+        dest.write_all(&code_lengths)?;
 
         // sort again  by codes this time.
         freq_counts.sort_unstable_by(|a, b| a.x.cmp(&b.x));
@@ -452,8 +443,7 @@ fn encode_symbols_fallback<W: Write>(
             *pos = (sym.z & 255) as u8;
         }
         // write symbols
-        dest.write_all(&symbols[0..sum])
-            .expect("Could not write symbols to destination buffer");
+        dest.write_all(&symbols[0..sum])?;
     }
 
     // write data
@@ -463,24 +453,21 @@ fn encode_symbols_fallback<W: Write>(
     //      -> The encode_symbols may write to the next stream position(since we use one large vector
     //          and subdivide it into smaller chunks) stream 1 may overwrite to stream2
     //          position which corrupts stream 2 data.
-    dest.write_all(stream1.get_output())
-        .expect("Failed to write to destination buffer");
+    dest.write_all(stream1.get_output())?;
 
-    dest.write_all(stream2.get_output())
-        .expect("Failed to write to destination buffer");
+    dest.write_all(stream2.get_output())?;
 
-    dest.write_all(stream3.get_output())
-        .expect("Failed to write to destination buffer");
+    dest.write_all(stream3.get_output())?;
 
-    dest.write_all(stream4.get_output())
-        .expect("Failed to write to destination buffer");
+    dest.write_all(stream4.get_output())?;
 
-    dest.write_all(stream5.get_output())
-        .expect("Failed to write to destination buffer");
+    dest.write_all(stream5.get_output())?;
+
+    Ok(())
 }
 /// Compress a buffer `src` and store it into
 /// buffer `dest`
-pub fn huff_compress<W: Write>(src: &[u8], dest: &mut W)
+pub fn huff_compress<W: Write>(src: &[u8], dest: &mut W) -> Result<(), EntropyErrors>
 {
     /*
      * Main code for compression.
@@ -602,17 +589,14 @@ pub fn huff_compress<W: Write>(src: &[u8], dest: &mut W)
 
                 let entries = freq_counts.map(crate::utils::Symbols::to_u32);
 
+                #[rustfmt::skip]
                 encode_symbols(
                     &mut buf,
-                    src_chunk,
-                    &entries,
-                    dest,
-                    info_bit[0],
-                    &mut freq_counts,
-                    non_zero,
-                    code_lengths,
-                    last_sym,
-                );
+                    src_chunk, &entries,
+                    dest, info_bit[0],
+                    &mut freq_counts, non_zero,
+                    code_lengths, last_sym,
+                )?;
             }
         }
         // read the next block
@@ -622,6 +606,8 @@ pub fn huff_compress<W: Write>(src: &[u8], dest: &mut W)
 
         src_chunk = &src[start..end];
     }
+    // Everything is okay
+    Ok(())
 }
 
 #[test]

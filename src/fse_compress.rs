@@ -10,6 +10,7 @@ use log::Level::Trace;
 use log::{debug, log_enabled, trace};
 
 use crate::constants::{state_generator, MAX_TABLE_LOG, MIN_TABLE_LOG, TABLE_LOG, TABLE_SIZE};
+use crate::errors::EntropyErrors;
 use crate::fse_bitstream::FseStreamWriter;
 use crate::huff_bitstream::BitStreamWriter;
 use crate::utils::{histogram, write_rle, write_uncompressed, Symbols};
@@ -268,7 +269,7 @@ fn generate_state_bits(freq_counts: &mut [Symbols; 256], non_zero: usize, table_
 /// but this lazy state generator is actually good.
 fn spread_symbols(
     freq_counts: &mut [Symbols; 256], table_size: usize,
-) -> ([u16; TABLE_SIZE], [i32; 256])
+) -> Result<([u16; TABLE_SIZE], [i32; 256]), EntropyErrors>
 {
     /*
      * Ps: table size is (1<<table_log)
@@ -331,13 +332,21 @@ fn spread_symbols(
     }
 
     // Cumulative count should be equal to table size
-    assert_eq!(
-        c_count as usize, table_size,
-        "Cumulative count is not equal to table size, internal error"
-    );
+    if c_count as usize != table_size
+    {
+        return Err(EntropyErrors::CorruptHeader(format!(
+            "Cumulative count is not equal to table size, error"
+        )));
+    }
+    if state != INITIAL_STATE
+    {
+        // state must be equal to the initial state, since its a cyclic state, otherwise we messed up
 
-    // state must be equal to the initial state, since its a cyclic state, otherwise we messed up
-    assert_eq!(state, INITIAL_STATE, "Internal error, state is not zero");
+        return Err(EntropyErrors::CorruptHeader(format!(
+            "Internal error, cyclic state is not back to initial state state:{},expected:{}",
+            state, INITIAL_STATE
+        )));
+    }
 
     /*
      * Build next_state[].  This array maps symbol occurrences in the
@@ -357,7 +366,7 @@ fn spread_symbols(
 
         cumulative_state_counts[symbol] += 1;
     }
-    (next_state, next_state_offset)
+    Ok((next_state, next_state_offset))
 }
 /// Write headers, packing symbols and their state counts
 /// into a bitstream format
@@ -368,7 +377,7 @@ fn spread_symbols(
 fn write_headers<W: Write>(
     symbols: &[Symbols; 256], non_zero: usize, block_size: usize, table_log: usize,
     last_block: bool, dest: &mut W,
-)
+) -> Result<(), EntropyErrors>
 {
     /*
      * Okay we have a header problem
@@ -415,20 +424,25 @@ fn write_headers<W: Write>(
 
     assert!(state_bits <= 11);
 
+    macro_rules! encode_single {
+        ($symbol:tt,$state:tt) => {
+            stream.add_bits($symbol, u8::BITS as u8);
+            stream.add_bits($state, state_bits as u8);
+        };
+    }
+
     let (mut symbol, mut state);
     for chunk in chunks
     {
         symbol = chunk[0].z as u64;
         state = u64::from(chunk[0].y);
 
-        stream.add_bits(symbol, u8::BITS as u8);
-        stream.add_bits(state, state_bits as u8);
+        encode_single!(symbol, state);
 
         symbol = chunk[1].z as u64;
         state = u64::from(chunk[1].y);
 
-        stream.add_bits(symbol, u8::BITS as u8);
-        stream.add_bits(state, state_bits as u8);
+        encode_single!(symbol, state);
 
         unsafe {
             stream.flush_fast();
@@ -439,8 +453,8 @@ fn write_headers<W: Write>(
         symbol = chunk.z as u64;
         state = u64::from(chunk.y);
 
-        stream.add_bits(symbol, u8::BITS as u8);
-        stream.add_bits(state, state_bits as u8);
+        encode_single!(symbol, state);
+
         unsafe {
             stream.flush_fast();
         }
@@ -453,22 +467,24 @@ fn write_headers<W: Write>(
 
     trace!("tANS Header size: {} bytes", header_size);
     // write info bit
-    dest.write_all(&[info_bit]).unwrap();
+    dest.write_all(&[info_bit])?;
     // write block size
-    dest.write_all(&block_size.to_le_bytes()[0..3]).unwrap();
+    dest.write_all(&block_size.to_le_bytes()[0..3])?;
 
     // write number used to do state bits
     let compact_log = (table_log << 4) as u8;
     // + number for table log.
-    dest.write_all(&[compact_log | state_bits]).unwrap();
+    dest.write_all(&[compact_log | state_bits])?;
 
     // header size
-    dest.write_all(&header_size.to_le_bytes()[0..2]).unwrap();
+    dest.write_all(&header_size.to_le_bytes()[0..2])?;
 
     // write number of symbols
-    dest.write_all(&[255 - (non_zero - 1) as u8]).unwrap();
+    dest.write_all(&[255 - (non_zero - 1) as u8])?;
 
-    dest.write_all(stream.get_output()).unwrap();
+    dest.write_all(stream.get_output())?;
+
+    Ok(())
 }
 /// Calculate the maximum state log bits
 /// to use for this block
@@ -482,7 +498,7 @@ fn max_log(src_size: usize) -> usize
 fn encode_symbols_fallback<W: Write>(
     src: &[u8], common_symbol: i16, symbols: &mut [Symbols; 256], table_size: usize,
     next_states: &[u16; TABLE_SIZE], next_states_offset: &[i32; 256], buf: &mut [u8], dest: &mut W,
-)
+) -> Result<(), EntropyErrors>
 {
     /*
      * The one thing to keep in mind is that how different this is from Huffman encoding
@@ -592,11 +608,9 @@ fn encode_symbols_fallback<W: Write>(
     stream.encode_final_states(c1, c2, c3, c4, c5, table_size);
 
     // write size of this block
-    dest.write_all(&stream.get_position().to_le_bytes()[0..3])
-        .unwrap();
+    dest.write_all(&stream.get_position().to_le_bytes()[0..3])?;
 
-    dest.write_all(stream.get_output())
-        .expect("Failed to write to destination buffer");
+    dest.write_all(stream.get_output())?;
 
     // Logging information
     if log_enabled!(Trace)
@@ -609,43 +623,45 @@ fn encode_symbols_fallback<W: Write>(
         );
         println!();
     }
+    Ok(())
 }
 
 #[inline(always)]
+
+#[rustfmt::skip]
 fn encode_symbols<W: Write>(
     src: &[u8], common_symbol: i16, symbols: &mut [Symbols; 256], table_size: usize,
     next_states: &[u16; TABLE_SIZE], next_states_offset: &[i32; 256], buf: &mut [u8], dest: &mut W,
-)
+)->Result<(),EntropyErrors>
 {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         if is_x86_feature_detected!("bmi2")
         {
             return unsafe {
-                #[rustfmt::skip]
                     encode_symbols_bmi(
                     src, common_symbol,
                     symbols, table_size, next_states,
                     next_states_offset,
                     buf, dest,
-                );
+                )
             };
         }
     }
-    #[rustfmt::skip]
         encode_symbols_fallback(
         src, common_symbol,
         symbols, table_size,
         next_states, next_states_offset,
-        buf, dest);
+        buf, dest)
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "bmi2")]
+#[rustfmt::skip]
 unsafe fn encode_symbols_bmi<W: Write>(
     src: &[u8], common_symbol: i16, symbols: &mut [Symbols; 256], table_size: usize,
     next_states: &[u16; TABLE_SIZE], next_states_offset: &[i32; 256], buf: &mut [u8], dest: &mut W,
-)
+)->Result<(),EntropyErrors>
 {
     encode_symbols_fallback(
         src,
@@ -658,7 +674,7 @@ unsafe fn encode_symbols_bmi<W: Write>(
         dest,
     )
 }
-pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W)
+pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W) -> Result<(), EntropyErrors>
 {
     /*
      * FSE compression, as usual, the steps
@@ -750,12 +766,10 @@ pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W)
         if compressibility + THRESH0LD > (src_chunk.len() as u32 * u8::BITS)
         {
             debug!("Block size:{}", src_chunk.len());
-
             debug!(
                 "Theoretical compression ratio:{}",
                 compressibility as f32 / src_chunk.len() as f32
             );
-
             debug!("Emitting block as uncompressed");
 
             write_uncompressed(src_chunk, dest, is_last);
@@ -777,21 +791,25 @@ pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W)
                 tbl_log,
                 is_last,
                 dest,
-            );
+            )?;
 
             let common_symbol = freq_counts[255].z;
             // spread symbols, generating next_state also
             // spread symbols requires symbols arranged in alphabetical order
             // to generate cumulative frequency
             //
-            let (next_states, next_states_offset) = spread_symbols(&mut new_counts, tbl_size);
+            let (next_states, next_states_offset) = spread_symbols(&mut new_counts, tbl_size)?;
 
-            #[rustfmt::skip]
-                encode_symbols(
-                src_chunk, common_symbol,
-                &mut new_counts, tbl_size,
-                &next_states, &next_states_offset,
-                &mut buf, dest);
+            encode_symbols(
+                src_chunk,
+                common_symbol,
+                &mut new_counts,
+                tbl_size,
+                &next_states,
+                &next_states_offset,
+                &mut buf,
+                dest,
+            )?;
         }
         // read the next block
         start = end;
@@ -800,4 +818,5 @@ pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W)
 
         src_chunk = &src[start..end];
     }
+    Ok(())
 }

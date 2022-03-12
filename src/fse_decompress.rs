@@ -1,13 +1,14 @@
 use std::io::Read;
 
 use crate::constants::{state_generator, TABLE_SIZE};
+use crate::errors::EntropyErrors;
 use crate::fse_bitstream::FSEStreamReader;
 use crate::huff_bitstream::BitStreamReader;
 use crate::utils::{read_rle, read_uncompressed, Symbols};
 
 fn spread_symbols(
     freq_counts: &[Symbols; 256], tbl_log: usize, tbl_size: usize,
-) -> [u32; TABLE_SIZE]
+) -> Result<[u32; TABLE_SIZE], EntropyErrors>
 {
     // the start and the end of each state
     const INITIAL_STATE: usize = 0;
@@ -61,13 +62,21 @@ fn spread_symbols(
         }
     }
     // Cumulative count should be equal to table size
-    assert_eq!(
-        c_count as usize, tbl_size,
-        "Cumulative count is not equal to table size, internal error"
-    );
+    if c_count as usize != tbl_size
+    {
+        return Err(EntropyErrors::CorruptHeader(format!(
+            "Cumulative count is not equal to table size, error"
+        )));
+    }
+    if state != INITIAL_STATE
+    {
+        // state must be equal to the initial state, since its a cyclic state, otherwise we messed up
 
-    // state must be equal to the initial state, since its a cyclic state, otherwise we messed up
-    assert_eq!(state, INITIAL_STATE, "Internal error, state is not zero");
+        return Err(EntropyErrors::CorruptHeader(format!(
+            "Internal error, cyclic state is not back to initial state state:{},expected:{}",
+            state, INITIAL_STATE
+        )));
+    }
 
     /*
      * Okay one more thing is now assigning bits to state
@@ -132,10 +141,10 @@ fn spread_symbols(
     // num_bits   -> 8..16 bits.  [sym.x]
     // next_state -> 16..32 bits. [sym.y]
 
-    state_array.map(|x| u32::from(x.y) << 16 | x.x << 8 | ((x.z) as u32))
+    Ok(state_array.map(|x| u32::from(x.y) << 16 | x.x << 8 | ((x.z) as u32)))
 }
 
-fn decode_symbols(src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block_size: usize)
+fn decode_symbols(src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block_size: usize)->Result<(), EntropyErrors>
 {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
@@ -146,21 +155,21 @@ fn decode_symbols(src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block
             }
         }
     }
-    decode_symbols_fallback(src, states, dest, block_size);
+    decode_symbols_fallback(src, states, dest, block_size)
 }
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "bmi2")]
 unsafe fn decode_symbols_bmi(
     src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block_size: usize,
-)
+)->Result<(), EntropyErrors>
 {
-    return decode_symbols_fallback(src, states, dest, block_size);
+    decode_symbols_fallback(src, states, dest, block_size)
 }
 
 #[inline(always)]
 fn decode_symbols_fallback(
     src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block_size: usize,
-)
+) -> Result<(), EntropyErrors>
 {
     /*
      * Decode the FSE bitstream.
@@ -199,11 +208,10 @@ fn decode_symbols_fallback(
         decode_five!(initial, 0);
     }
 
-
     let mut start = block_size - rounded_down;
 
     if start == 0 && block_size % 10 == 0
-    { 
+    {
         // blocks divisible by 10 are a sure hell
         start = 5;
     }
@@ -237,7 +245,22 @@ fn decode_symbols_fallback(
             decode_five!(chunk, 0);
         }
     }
+    if src.len() >= 10 && stream._get_position() < src.len() - 10
+    {
+        return Err(EntropyErrors::CorruptStream(
+            "FSE stream is possibly corrupt, more than 10 bits not consumed".to_string(),
+        ));
+    }
+    if  src.len() > stream._get_position()
+    {
+        return Err(EntropyErrors::CorruptStream(format!(
+            "FSE stream is possibly corrupt,input stream was over read by {} bytes",
+             src.len()-stream._get_position()
+        )));
+    }
     dest[0..start].copy_from_slice(&initial[5 - start..]);
+
+    Ok(())
 }
 fn read_headers(buf: &[u8], symbol_count: u8, state_bits: u8) -> [Symbols; 256]
 {
@@ -267,7 +290,6 @@ fn read_headers(buf: &[u8], symbol_count: u8, state_bits: u8) -> [Symbols; 256]
             y: state,
             x: 0,
         };
-
     }
 
     if (symbol_count & 1) != 0
@@ -284,21 +306,20 @@ fn read_headers(buf: &[u8], symbol_count: u8, state_bits: u8) -> [Symbols; 256]
             y: state,
             x: 0,
         };
-
     }
 
     symbols
 }
-pub fn fse_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
+pub fn fse_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>) -> Result<(), EntropyErrors>
 {
     // read block information
     let mut block_info = [0];
 
-    src.read_exact(&mut block_info).unwrap();
+    src.read_exact(&mut block_info)?;
 
     let mut length = [0, 0, 0, 0];
     // read the length
-    src.read_exact(&mut length[0..3]).unwrap();
+    src.read_exact(&mut length[0..3])?;
 
     let mut block_length = u32::from_le_bytes(length);
 
@@ -340,9 +361,9 @@ pub fn fse_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
         }
         else
         {
-            src.read_exact(&mut state_bits).unwrap();
+            src.read_exact(&mut state_bits)?;
 
-            src.read_exact(&mut header_t).unwrap();
+            src.read_exact(&mut header_t)?;
 
             if dest.capacity() <= (block_length as usize + dest.len())
             {
@@ -352,10 +373,9 @@ pub fn fse_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
 
             let header_size = u16::from_le_bytes(header_t);
 
-            src.read_exact(&mut symbols_count).unwrap();
+            src.read_exact(&mut symbols_count)?;
 
-            src.read_exact(&mut header[0..usize::from(header_size)])
-                .unwrap();
+            src.read_exact(&mut header[0..usize::from(header_size)])?;
 
             let tbl_log = state_bits[0] >> 4;
 
@@ -367,13 +387,13 @@ pub fn fse_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
                 state_bits[0] & 0xF,
             );
             // reconstruct next_state
-            let next_state = spread_symbols(&symbols, tbl_log as usize, tbl_size);
+            let next_state = spread_symbols(&symbols, tbl_log as usize, tbl_size)?;
 
-            src.read_exact(&mut compressed_size[0..3]).unwrap();
+            src.read_exact(&mut compressed_size[0..3])?;
 
             let compressed_length = (u32::from_le_bytes(compressed_size)) as usize;
 
-            src.read_exact(&mut source[0..compressed_length]).unwrap();
+            src.read_exact(&mut source[0..compressed_length])?;
 
             let start = dest.len();
 
@@ -399,9 +419,9 @@ pub fn fse_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
             decode_symbols(
                 &source[0..compressed_length],
                 &next_state,
-                dest.get_mut(start..).unwrap(),
+                &mut dest[start..],
                 block_length as usize,
-            );
+            )?;
 
             // we had to add a +5 length to allow for unused symbols to
             // be added to the state,
@@ -415,9 +435,10 @@ pub fn fse_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>)
         }
 
         // not last block, pull in more bytes.
-        src.read_exact(&mut block_info).unwrap();
+        src.read_exact(&mut block_info)?;
         // read the length for the next iteration
 
-        src.read_exact(length.get_mut(0..3).unwrap()).unwrap();
+        src.read_exact(&mut length[0..3])?;
     }
+    Ok(())
 }

@@ -119,7 +119,7 @@ impl<'dest> FseStreamWriter<'dest>
         encode_single!(c5, MAX_TABLE_LOG);
 
         // add a dummy bit so that we have 56 bits in the buffer
-        self.add_bits(1, 0);
+        self.add_bits((56 - MAX_TABLE_LOG * 5) as u8, 0);
 
         unsafe {
             self.flush_fast();
@@ -149,7 +149,7 @@ impl<'dest> FseStreamWriter<'dest>
         // the offset(8) is because position points 8 bytes from the bits written
         let offset = (u64::BITS / u8::BITS) as usize;
 
-        &self.dest[self.position + offset..]
+        &self.dest[self.position + usize::from(self.bits >> 3) + offset..]
     }
 
     #[inline(always)]
