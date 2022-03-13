@@ -373,6 +373,7 @@ fn spread_symbols(
 ///
 /// The format is
 /// |symbol| -> 8 bits
+///
 /// |State counts| -> `max_state_bits(see` below for explanation)
 fn write_headers<W: Write>(
     symbols: &[Symbols; 256], non_zero: usize, block_size: usize, table_log: usize,
@@ -572,7 +573,7 @@ fn encode_symbols_fallback<W: Write>(
 
         let mut start = 5 - (rem_chunks.len() % 5);
 
-        if rem_chunks.len() % 10 == 0
+        if rem_chunks.len() % 5 == 0
         {
             // if chunk is divisible by 10, don't add 5 dummy zeros
             // if it is divisible by 5, is it okay to add?

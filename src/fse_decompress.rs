@@ -210,9 +210,9 @@ fn decode_symbols_fallback(
 
     let mut start = block_size - rounded_down;
 
-    if start == 0 && block_size % 10 == 0
+    if start == 0 && block_size % 5 == 0
     {
-        // blocks divisible by 10 are a sure hell
+        // blocks divisible by 5 are a sure hell
         start = 5;
     }
     // now dest is aligned to a 5 byte boundary
@@ -310,6 +310,7 @@ fn read_headers(buf: &[u8], symbol_count: u8, state_bits: u8) -> [Symbols; 256]
 
     symbols
 }
+/// Decompress a FSE/tANS compressed buffer
 pub fn fse_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>) -> Result<(), EntropyErrors>
 {
     // read block information
@@ -404,7 +405,7 @@ pub fn fse_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>) -> Result<(), En
             if new_len > dest.capacity()
             {
                 let cap = dest.capacity();
-                dest.reserve_exact(new_len - cap);
+                dest.reserve(new_len - cap);
             }
             unsafe { dest.set_len(new_len) };
 
