@@ -334,9 +334,7 @@ fn spread_symbols(
     // Cumulative count should be equal to table size
     if c_count as usize != table_size
     {
-        return Err(EntropyErrors::CorruptHeader(format!(
-            "Cumulative count is not equal to table size, error"
-        )));
+        return Err(EntropyErrors::CorruptHeader("Cumulative count is not equal to table size, error".to_string()));
     }
     if state != INITIAL_STATE
     {

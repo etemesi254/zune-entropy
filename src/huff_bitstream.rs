@@ -72,7 +72,7 @@ impl<'src> BitStreamReader<'src>
     #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))] // bmi support
     pub fn decode_single(&mut self, dest: &mut u8, table: &[u16; TABLE_SIZE])
     {
-        let entry = table[(self.peek_bits::<LIMIT>())];
+        let entry = table[self.peek_bits::<LIMIT>()];
 
         let bits = (entry & 0xFF) as u8;
 

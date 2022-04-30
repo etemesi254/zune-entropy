@@ -26,7 +26,7 @@ pub struct FseStreamWriter<'dest>
 {
     // Number of actual bits in the bit buffer.
     bits: u8,
-    // Stores current unflushed bits
+    // Stores current un-flushed bits
     buf: u64,
     // position to write this in the output buffer
     pub(crate) position: usize,
@@ -85,13 +85,14 @@ impl<'dest> FseStreamWriter<'dest>
 
         self.add_bits(num_bits, low_bits);
         // Determine next state
-        let offset = u64::from(*curr_state >> num_bits);
+        let offset = u32::from(*curr_state >> num_bits);
         // Note:  this is depends on wraparound integer semantics
         // if a platform doesn't have wraparound mathematics, this is UB
         // The issue is that state can be deltaFindState can be less than 0.
         // so converting it to u32 makes it to be a large integer, adding offset and `&` ing it
-        // gives the same value.
-        *curr_state = next_states[(symbol >> 32).wrapping_add(offset) as usize & (TABLE_SIZE - 1)];
+        // gives the same value as if it was a negative int 32.
+        *curr_state =
+            next_states[((symbol >> 32) as u32).wrapping_add(offset) as usize & (TABLE_SIZE - 1)];
     }
 
     /// Encode final values of states to the bitstream
@@ -144,6 +145,7 @@ impl<'dest> FseStreamWriter<'dest>
         }
     }
 
+    // Return compressed output from our buffer.
     pub fn get_output(&self) -> &[u8]
     {
         // the offset(8) is because position points 8 bytes from the bits written
