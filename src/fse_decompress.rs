@@ -1,5 +1,3 @@
-use std::io::Read;
-
 use crate::constants::{state_generator, TABLE_SIZE};
 use crate::errors::EntropyErrors;
 use crate::fse_bitstream::FSEStreamReader;
@@ -64,9 +62,7 @@ fn spread_symbols(
     // Cumulative count should be equal to table size
     if c_count as usize != tbl_size
     {
-        return Err(EntropyErrors::CorruptHeader(format!(
-            "Cumulative count is not equal to table size, error"
-        )));
+        return Err(EntropyErrors::CorruptHeader("Cumulative count is not equal to table size, error".to_string()));
     }
     if state != INITIAL_STATE
     {
@@ -144,7 +140,9 @@ fn spread_symbols(
     Ok(state_array.map(|x| u32::from(x.y) << 16 | x.x << 8 | ((x.z) as u32)))
 }
 
-fn decode_symbols(src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block_size: usize)->Result<(), EntropyErrors>
+fn decode_symbols(
+    src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block_size: usize,
+) -> Result<(), EntropyErrors>
 {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
@@ -161,7 +159,7 @@ fn decode_symbols(src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block
 #[target_feature(enable = "bmi2")]
 unsafe fn decode_symbols_bmi(
     src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block_size: usize,
-)->Result<(), EntropyErrors>
+) -> Result<(), EntropyErrors>
 {
     decode_symbols_fallback(src, states, dest, block_size)
 }
@@ -248,14 +246,14 @@ fn decode_symbols_fallback(
     if src.len() >= 10 && stream._get_position() < src.len() - 10
     {
         return Err(EntropyErrors::CorruptStream(
-            "FSE stream is possibly corrupt, more than 10 bits not consumed".to_string(),
+            "FSE stream is possibly corrupt, more than 10 bytes not consumed".to_string(),
         ));
     }
-    if  src.len() > stream._get_position()
+    if src.len() > stream._get_position()
     {
         return Err(EntropyErrors::CorruptStream(format!(
-            "FSE stream is possibly corrupt,input stream was over read by {} bytes",
-             src.len()-stream._get_position()
+            "FSE stream is possibly corrupt, input stream was over read by {} bytes",
+            src.len() - stream._get_position()
         )));
     }
     dest[0..start].copy_from_slice(&initial[5 - start..]);
@@ -311,32 +309,26 @@ fn read_headers(buf: &[u8], symbol_count: u8, state_bits: u8) -> [Symbols; 256]
     symbols
 }
 /// Decompress a FSE/tANS compressed buffer
-pub fn fse_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>) -> Result<(), EntropyErrors>
+pub fn fse_decompress(src: &[u8], dest: &mut Vec<u8>) -> Result<(), EntropyErrors>
 {
+    let mut src_position = 4;
+
     // read block information
-    let mut block_info = [0];
+    let mut block_info = src[0];
 
-    src.read_exact(&mut block_info)?;
-
-    let mut length = [0, 0, 0, 0];
     // read the length
-    src.read_exact(&mut length[0..3])?;
+    let mut length = [0, 0, 0, 0];
+    length[0..3].copy_from_slice(&src[1..4]);
 
-    let mut block_length = u32::from_le_bytes(length);
+    let mut block_length;
 
-    // not all bytes will be used
-    let mut source = vec![0; (block_length + 200) as usize];
+    let mut header_t:[u8;2];
 
-    // header cannot go beyond 600 bytes
-    let mut header = vec![0; 600];
-
-    let mut header_t = [0; 2];
-
-    let mut state_bits = [0];
+    let mut state_bits;
 
     let mut compressed_size = [0; 4];
 
-    let mut symbols_count = [0];
+    let mut symbols_count;
 
     loop
     {
@@ -344,57 +336,65 @@ pub fn fse_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>) -> Result<(), En
 
         if dest.capacity() <= (block_length as usize + dest.len())
         {
-            dest.reserve(block_length as usize);
+            dest.reserve_exact(block_length as usize);
         }
-        if (block_info[0] >> 6) == 0b10
+        if (block_info >> 6) == 0b10
         {
-            read_uncompressed(src, block_length, dest);
+            read_uncompressed(&src[src_position..], block_length, dest);
+            src_position+=block_length as usize;
         }
-        else if (block_info[0] >> 6) == 0b01
+        else if (block_info >> 6) == 0b01
         {
             // RLE block
-            read_rle(src, block_length, dest);
+            read_rle(&src[src_position..], block_length, dest);
+            src_position+=1;
         }
-        else if (block_info[0] >> 6) == 0b00
+        else if (block_info>> 6) == 0b00
         {
             // huffman compressed block
             panic!("Huffman compressed block passed to tANS decoder, internal error");
         }
         else
         {
-            src.read_exact(&mut state_bits)?;
+            state_bits = src[src_position];
+            src_position+=1;
 
-            src.read_exact(&mut header_t)?;
+            header_t = src[src_position..src_position+2].try_into().unwrap();
+            src_position+=2;
 
             if dest.capacity() <= (block_length as usize + dest.len())
             {
                 // no don't grow using amortized technique, this may become really big
-                dest.reserve(block_length as usize);
+                dest.reserve_exact(block_length as usize);
             }
 
-            let header_size = u16::from_le_bytes(header_t);
+            let header_size = usize::from(u16::from_le_bytes(header_t));
 
-            src.read_exact(&mut symbols_count)?;
+            symbols_count = src[src_position];
+            src_position += 1;
 
-            src.read_exact(&mut header[0..usize::from(header_size)])?;
+            let header =&src[src_position..src_position+header_size];
+            src_position += header_size;
 
-            let tbl_log = state_bits[0] >> 4;
+            let tbl_log = state_bits >> 4;
 
             let tbl_size = 1 << tbl_log;
 
             let symbols = read_headers(
-                &header[0..usize::from(header_size)],
-                symbols_count[0],
-                state_bits[0] & 0xF,
+                &header[0..header_size],
+                symbols_count,
+                state_bits & 0xF,
             );
             // reconstruct next_state
             let next_state = spread_symbols(&symbols, tbl_log as usize, tbl_size)?;
 
-            src.read_exact(&mut compressed_size[0..3])?;
+            compressed_size[0..3].copy_from_slice(&src[src_position..src_position+3]);
+            src_position+=3;
 
             let compressed_length = (u32::from_le_bytes(compressed_size)) as usize;
 
-            src.read_exact(&mut source[0..compressed_length])?;
+            let source = &src[src_position..src_position+compressed_length];
+            src_position+=compressed_length;
 
             let start = dest.len();
 
@@ -418,7 +418,7 @@ pub fn fse_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>) -> Result<(), En
             );
 
             decode_symbols(
-                &source[0..compressed_length],
+                source,
                 &next_state,
                 &mut dest[start..],
                 block_length as usize,
@@ -430,16 +430,17 @@ pub fn fse_decompress<R: Read>(src: &mut R, dest: &mut Vec<u8>) -> Result<(), En
             unsafe { dest.set_len(new_len - 5) };
         }
         // we reached the last block.
-        if (block_info[0] >> 5) & 1 == 1
+        if (block_info >> 5) & 1 == 1
         {
             break;
         }
-
         // not last block, pull in more bytes.
-        src.read_exact(&mut block_info)?;
-        // read the length for the next iteration
+        block_info = src[src_position];
+        src_position+=1;
 
-        src.read_exact(&mut length[0..3])?;
+        // read the length for the next iteration
+        length[0..3].copy_from_slice(&src[src_position..src_position+3]);
+        src_position+=3;
     }
     Ok(())
 }
