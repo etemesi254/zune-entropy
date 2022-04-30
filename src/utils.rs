@@ -1,6 +1,6 @@
 //! Small function utilities for compression and decompression
 
-use std::io::{Read, Write};
+use std::io::{Write};
 
 use crate::huff_decompress::LIMIT;
 
@@ -169,7 +169,7 @@ pub fn write_uncompressed<W: Write>(buf: &[u8], dest: &mut W, is_last: bool)
     dest.write_all(buf).unwrap();
 }
 
-pub fn read_uncompressed<R: Read>(src: &mut R, block_length: u32, dest: &mut Vec<u8>)
+pub fn read_uncompressed(src: &[u8], block_length: u32, dest: &mut Vec<u8>)
 {
     // block was uncompressed
     // assert that the above reserve actually worked
@@ -188,15 +188,15 @@ pub fn read_uncompressed<R: Read>(src: &mut R, block_length: u32, dest: &mut Vec
         dest.set_len(new_len);
         // read_exact guarantees it will fill up buf, if it doesn't it will panic,
         // hence the guarantees of the set len are met.
-        src.read_exact(&mut dest[old_len..new_len]).unwrap();
+        dest[old_len..new_len].copy_from_slice(&src[0..block_length as usize]);
+        //src.read_exact(&mut dest[old_len..new_len]).unwrap();
     }
 }
 
-pub fn read_rle<R: Read>(src: &mut R, block_length: u32, dest: &mut Vec<u8>)
+pub fn read_rle(src: &[u8], block_length: u32, dest: &mut Vec<u8>)
 {
-    let mut rle = [0];
+    let rle = src[0];
     // read the byte
-    src.read_exact(&mut rle).unwrap();
 
     let old_len = dest.len();
     let new_len = old_len + block_length as usize;
@@ -211,7 +211,7 @@ pub fn read_rle<R: Read>(src: &mut R, block_length: u32, dest: &mut Vec<u8>)
         dest.set_len(new_len);
     }
     // fill with rle
-    dest[old_len..new_len].fill(rle[0]);
+    dest[old_len..new_len].fill(rle);
     // done
 }
 
