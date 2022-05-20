@@ -36,6 +36,10 @@ pub struct FseStreamWriter<'dest>
 impl<'dest> FseStreamWriter<'dest>
 {
     /// Create a new stream writer for a FSE
+    ///
+    /// # Arguments
+    /// `out_dest`: The array which we are going to be periodically
+    /// flushing our bit-buffer to.
     pub fn new(out_dest: &mut [u8]) -> FseStreamWriter
     {
         // start 8 bits from the end
@@ -49,22 +53,42 @@ impl<'dest> FseStreamWriter<'dest>
             dest: out_dest,
         }
     }
-    /// Add new bits to the buffer
-    /// and update bits in the buffer.
+    /// Add new bits to the buffer and update how many bits we have
+    ///
+    /// # Arguments
+    /// `nbits`: Number of bits we will be adding to the output buffer.
+    /// `value`: The variable we will extract `nbits` from.
+    ///
+    /// Note that `add_bits` expects that `value` is masked before calling this function
+    /// otherwise it leads to data corruption.
+    ///
     #[inline(always)]
     fn add_bits(&mut self, nbits: u8, value: u16)
     {
         // check that adding the value won't corrupt top bits
         // indicating value wasn't masked
         debug_assert!((u32::from(nbits)) <= value.leading_zeros());
+        // Don't read more bits than what a u16 can hold.
+        debug_assert!(nbits <= 16);
 
         // new bits are added to the lower bits of the bit buffer
         self.buf = (self.buf << nbits) | u64::from(value);
 
         self.bits += nbits as u8;
     }
-    /// Encode symbols and update current `state(curr_state`)
+    /// Encode symbols and update current state.
     /// to point to the next state.
+    ///
+    /// # Arguments
+    ///  - `symbol`:  The byte we are trying to encode
+    ///  - `entries`: Contains info about the symbol including
+    ///             1. Number of bits the symbol requires(0-31 bits)
+    ///             2.  Next state array value
+    ///  - `next_states`: Contains next state table for state transitioning
+    ///  - `curr_state`: The current state value.
+    ///
+    /// # Modifies
+    /// `curr_state`
     #[inline(always)]
     #[allow(clippy::cast_sign_loss)]
     pub fn encode_symbol(
@@ -96,8 +120,15 @@ impl<'dest> FseStreamWriter<'dest>
     }
 
     /// Encode final values of states to the bitstream
+    ///
     /// The decoder will read final states from the bitstream
     /// and work its way to the initial state
+    ///
+    /// # Arguments
+    /// - `c1`..`c5` : Final state variables for the 5 stream tANS encoder.
+    ///
+    /// - `table_size` : 2^n where `n` is the number of bits to be used to encode a single
+    /// state
     pub fn encode_final_states(
         &mut self, c1: u16, c2: u16, c3: u16, c4: u16, c5: u16, table_size: usize,
     )
@@ -125,11 +156,11 @@ impl<'dest> FseStreamWriter<'dest>
         unsafe {
             self.flush_fast();
         }
-
-        // no bits left
         assert_eq!(self.bits, 0);
     }
 
+    /// Carry out the final flush ensuring no more bits are left in the
+    /// bit buffer
     pub fn flush_final(&mut self)
     {
         assert!(self.bits <= 7);
@@ -154,9 +185,21 @@ impl<'dest> FseStreamWriter<'dest>
         &self.dest[self.position + usize::from(self.bits >> 3) + offset..]
     }
 
+    /// Flush bits to the buffer
+    ///
+    /// Flush writes from the back of the buffer moving forward
+    ///
+    /// # Invariants
+    ///
+    /// The caller needs to ensure there is enough space to the output buffer
+    /// passed to the `new` method, otherwise this function will end up
+    /// writing to out of bound memory(before its start).
     #[inline(always)]
     pub(crate) unsafe fn flush_fast(&mut self)
     {
+        // ensure that we have enough space to write new bits
+        // debug build only
+        debug_assert!(self.position > 8);
         // align bits to the top of the  buffer
         let buf = (self.buf << ((64 - self.bits) & (u64::BITS - 1) as u8)).to_le_bytes();
         // write 8 bytes
@@ -170,7 +213,7 @@ impl<'dest> FseStreamWriter<'dest>
         self.position -= (bytes_written >> 3) as usize;
         self.bits &= 7;
     }
-
+    /// Get the number of bytes used to create the compression
     pub fn get_position(&self) -> usize
     {
         // 8 is because position points 8 bytes from actual bits
@@ -192,6 +235,23 @@ pub struct FSEStreamReader<'src>
 
 impl<'src> FSEStreamReader<'src>
 {
+    /// Construct a new FSE stream reader
+    ///
+    /// This should be followed by a call to `align_decoder` and   `init_states()` before
+    /// commencing decoding.
+    ///
+    /// # Arguments
+    /// - `in_buffer`: The buffer where we will be pulling in bits from.
+    /// The buffer should start from the last byte written by the `FSEStreamWriter` which should include
+    /// stream state counts
+    ///
+    /// # Example
+    /// ```
+    /// let stream_reader = FSESTreamReader::new(&[23,23,23,3,32]); // dummy data
+    /// stream_reader.align_decoder();
+    /// // get back final state values.
+    /// let (mut c1,c2,c3,c4,c5)= stream.init_states();
+    /// ```
     pub fn new(in_buffer: &'src [u8]) -> FSEStreamReader<'src>
     {
         FSEStreamReader {
