@@ -10,7 +10,7 @@ use std::io::Write;
 use log::Level::Trace;
 use log::{debug, log_enabled, trace};
 
-use crate::constants::{LIMIT, SMALL_CHUNK_SIZE,EXTRA,CHUNK_SIZE};
+use crate::constants::{CHUNK_SIZE, EXTRA, LIMIT, SMALL_CHUNK_SIZE};
 use crate::errors::EntropyErrors;
 use crate::huff_bitstream::BitStreamWriter;
 use crate::utils::{histogram, write_rle, write_uncompressed, Symbols};
@@ -125,7 +125,6 @@ fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
     let mut threshold = INITIAL_THRESHOLD;
 
     let mut step_threshold = STEP_THRESHOLD;
-
     while spent > ONE
     {
         for i in offset..256
@@ -137,7 +136,7 @@ fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
             }
             let code_length = &mut code_lengths[i];
 
-            if *code_length == 0
+            if *code_length == 0 || usize::from(*code_length) == LIMIT
             {
                 // empty symbol, no code assigned to it.
                 continue;
@@ -150,7 +149,7 @@ fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
 
             step_threshold = step_threshold.max(dfs);
 
-            if diff - threshold > f32::EPSILON && usize::from(*code_length) !=LIMIT
+            if diff - threshold > f32::EPSILON
             {
                 // diff is greater than threshold (to machine epsilon)
                 // increase that code length
@@ -160,7 +159,7 @@ fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
 
                 histogram[i].y = u16::from(*code_length);
 
-                if spent <= ONE
+                if spent < ONE
                 {
                     // detect if we are already done.
                     break;
@@ -191,8 +190,7 @@ fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
         for i in 0..256
         {
             let have = ONE >> code_lengths[i];
-
-            if ONE - spent >= have && code_lengths[i] != 1
+            if ONE - spent >= have && code_lengths[i] > 3
             {
                 code_lengths[i] -= 1;
 
@@ -207,7 +205,6 @@ fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
             }
         }
     }
-
     assert!(spent <= ONE);
 
     histogram.sort_unstable_by(|a, b| a.y.cmp(&b.y));
@@ -315,17 +312,16 @@ fn encode_symbols_fallback<W: Write>(
     const START: usize = (CHUNK_SIZE + 4) / 5;
 
     let start = (src_chunk.len() + 4) / 5;
-    let extra = (EXTRA+4)/5;
-
+    let extra = (EXTRA + 4) / 5;
 
     // Initialize destination buffers.
     // out buffer should be in buffer / 5 + 200 bytes extra for padding
     // use one large table +200 bytes(each get 200 bytes). and split into four smaller ones
     // allows the base pointer to be stored in a single register in x86
-    let (buf1, remainder) = buf.split_at_mut(START+extra);
-    let (buf2, remainder) = remainder.split_at_mut(START+extra);
-    let (buf3, remainder) = remainder.split_at_mut(START+extra);
-    let (buf4, buf5) = remainder.split_at_mut(START+extra);
+    let (buf1, remainder) = buf.split_at_mut(START + extra);
+    let (buf2, remainder) = remainder.split_at_mut(START + extra);
+    let (buf3, remainder) = remainder.split_at_mut(START + extra);
+    let (buf4, buf5) = remainder.split_at_mut(START + extra);
 
     // Initialize stream writers
     let mut stream1 = BitStreamWriter::new(buf1);
