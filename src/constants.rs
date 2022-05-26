@@ -13,6 +13,10 @@ pub const MAX_TABLE_LOG: usize = 11;
 pub const TABLE_SIZE: usize = 1 << TABLE_LOG;
 /// Minimum table size
 pub const MIN_TABLE_LOG: usize = 5;
+// investigate why
+pub const CHUNK_SIZE: usize = 1 << 17;
+
+pub const EXTRA:usize = 1<<16;
 
 pub fn state_generator(num_states: usize) -> usize
 {
