@@ -6,7 +6,7 @@ use crate::utils::{read_rle, read_uncompressed, Symbols};
 
 fn spread_symbols(
     freq_counts: &[Symbols; 256], tbl_log: usize, tbl_size: usize,
-) -> Result<[u32; TABLE_SIZE], EntropyErrors>
+) -> Result<[u64; TABLE_SIZE], EntropyErrors>
 {
     // the start and the end of each state
     const INITIAL_STATE: usize = 0;
@@ -59,10 +59,14 @@ fn spread_symbols(
             count -= 1;
         }
     }
+
     // Cumulative count should be equal to table size
     if c_count as usize != tbl_size
     {
-        return Err(EntropyErrors::CorruptHeader("Cumulative count is not equal to table size, error".to_string()));
+        return Err(EntropyErrors::CorruptHeader(format!(
+            "Cumulative count is not equal to table size, error. Cumulative count:{},table_size:{}",
+            c_count, tbl_size
+        )));
     }
     if state != INITIAL_STATE
     {
@@ -136,12 +140,15 @@ fn spread_symbols(
     // symbol     -> 0..8 bits    [sym.z]
     // num_bits   -> 8..16 bits.  [sym.x]
     // next_state -> 16..32 bits. [sym.y]
+    // mask       -> 32..64 bits
 
-    Ok(state_array.map(|x| u32::from(x.y) << 16 | x.x << 8 | ((x.z) as u32)))
+    Ok(state_array.map(|x| {
+        ((1_u64 << x.x) - 1) << 32 | u64::from(x.y) << 16 | u64::from(x.x << 8) | ((x.z) as u64)
+    }))
 }
 
 fn decode_symbols(
-    src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block_size: usize,
+    src: &[u8], states: &[u64; TABLE_SIZE], dest: &mut [u8], block_size: usize,
 ) -> Result<(), EntropyErrors>
 {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -155,10 +162,11 @@ fn decode_symbols(
     }
     decode_symbols_fallback(src, states, dest, block_size)
 }
+
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "bmi2")]
 unsafe fn decode_symbols_bmi(
-    src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block_size: usize,
+    src: &[u8], states: &[u64; TABLE_SIZE], dest: &mut [u8], block_size: usize,
 ) -> Result<(), EntropyErrors>
 {
     decode_symbols_fallback(src, states, dest, block_size)
@@ -166,7 +174,7 @@ unsafe fn decode_symbols_bmi(
 
 #[inline(always)]
 fn decode_symbols_fallback(
-    src: &[u8], states: &[u32; TABLE_SIZE], dest: &mut [u8], block_size: usize,
+    src: &[u8], states: &[u64; TABLE_SIZE], dest: &mut [u8], block_size: usize,
 ) -> Result<(), EntropyErrors>
 {
     /*
@@ -260,6 +268,7 @@ fn decode_symbols_fallback(
 
     Ok(())
 }
+
 fn read_headers(buf: &[u8], symbol_count: u8, state_bits: u8) -> [Symbols; 256]
 {
     let mut symbols = [Symbols::default(); 256];
@@ -308,6 +317,7 @@ fn read_headers(buf: &[u8], symbol_count: u8, state_bits: u8) -> [Symbols; 256]
 
     symbols
 }
+
 /// Decompress a FSE/tANS compressed buffer
 pub fn fse_decompress(src: &[u8], dest: &mut Vec<u8>) -> Result<(), EntropyErrors>
 {
@@ -322,7 +332,7 @@ pub fn fse_decompress(src: &[u8], dest: &mut Vec<u8>) -> Result<(), EntropyError
 
     let mut block_length;
 
-    let mut header_t:[u8;2];
+    let mut header_t: [u8; 2];
 
     let mut state_bits;
 
@@ -341,15 +351,15 @@ pub fn fse_decompress(src: &[u8], dest: &mut Vec<u8>) -> Result<(), EntropyError
         if (block_info >> 6) == 0b10
         {
             read_uncompressed(&src[src_position..], block_length, dest);
-            src_position+=block_length as usize;
+            src_position += block_length as usize;
         }
         else if (block_info >> 6) == 0b01
         {
             // RLE block
             read_rle(&src[src_position..], block_length, dest);
-            src_position+=1;
+            src_position += 1;
         }
-        else if (block_info>> 6) == 0b00
+        else if (block_info >> 6) == 0b00
         {
             // huffman compressed block
             panic!("Huffman compressed block passed to tANS decoder, internal error");
@@ -357,10 +367,10 @@ pub fn fse_decompress(src: &[u8], dest: &mut Vec<u8>) -> Result<(), EntropyError
         else
         {
             state_bits = src[src_position];
-            src_position+=1;
+            src_position += 1;
 
-            header_t = src[src_position..src_position+2].try_into().unwrap();
-            src_position+=2;
+            header_t = src[src_position..src_position + 2].try_into().unwrap();
+            src_position += 2;
 
             if dest.capacity() <= (block_length as usize + dest.len())
             {
@@ -373,28 +383,24 @@ pub fn fse_decompress(src: &[u8], dest: &mut Vec<u8>) -> Result<(), EntropyError
             symbols_count = src[src_position];
             src_position += 1;
 
-            let header =&src[src_position..src_position+header_size];
+            let header = &src[src_position..src_position + header_size];
             src_position += header_size;
 
             let tbl_log = state_bits >> 4;
 
             let tbl_size = 1 << tbl_log;
 
-            let symbols = read_headers(
-                &header[0..header_size],
-                symbols_count,
-                state_bits & 0xF,
-            );
+            let symbols = read_headers(&header[0..header_size], symbols_count, state_bits & 0xF);
             // reconstruct next_state
             let next_state = spread_symbols(&symbols, tbl_log as usize, tbl_size)?;
 
-            compressed_size[0..3].copy_from_slice(&src[src_position..src_position+3]);
-            src_position+=3;
+            compressed_size[0..3].copy_from_slice(&src[src_position..src_position + 3]);
+            src_position += 3;
 
             let compressed_length = (u32::from_le_bytes(compressed_size)) as usize;
 
-            let source = &src[src_position..src_position+compressed_length];
-            src_position+=compressed_length;
+            let source = &src[src_position..src_position + compressed_length];
+            src_position += compressed_length;
 
             let start = dest.len();
 
@@ -436,11 +442,11 @@ pub fn fse_decompress(src: &[u8], dest: &mut Vec<u8>) -> Result<(), EntropyError
         }
         // not last block, pull in more bytes.
         block_info = src[src_position];
-        src_position+=1;
+        src_position += 1;
 
         // read the length for the next iteration
-        length[0..3].copy_from_slice(&src[src_position..src_position+3]);
-        src_position+=3;
+        length[0..3].copy_from_slice(&src[src_position..src_position + 3]);
+        src_position += 3;
     }
     Ok(())
 }

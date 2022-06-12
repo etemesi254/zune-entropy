@@ -201,7 +201,7 @@ impl<'dest> FseStreamWriter<'dest>
         // debug build only
         debug_assert!(self.position > 8);
         // align bits to the top of the  buffer
-        let buf = (self.buf << ((64 - self.bits) & (u64::BITS - 1) as u8)).to_le_bytes();
+        let buf = (self.buf << (64 - self.bits)).to_le_bytes();
         // write 8 bytes
         self.dest
             .as_mut_ptr()
@@ -228,7 +228,6 @@ pub struct FSEStreamReader<'src>
     src: &'src [u8],
     // position in our buffer,
     position: usize,
-
     bits_left: u8,
     buffer: u64,
 }
@@ -307,11 +306,15 @@ impl<'src> FSEStreamReader<'src>
 
         let bytes = (self.buffer & mask) as u16;
 
+        self.drop_bits(nbits);
+        bytes
+    }
+    #[inline]
+    fn drop_bits(&mut self, nbits: u8)
+    {
         self.bits_left -= nbits;
 
         self.buffer >>= nbits;
-
-        bytes
     }
     /// Align the input bitstream to start where the
     /// the encoder left at
@@ -331,30 +334,32 @@ impl<'src> FSEStreamReader<'src>
     /// Decode a single symbol from a state and update next state
 
     #[inline(always)]
-    pub fn decode_symbol(&mut self, state: &mut u16, dest: &mut u8, states: &[u32; TABLE_SIZE])
+    pub fn decode_symbol(&mut self, state: &mut u16, dest: &mut u8, states: &[u64; TABLE_SIZE])
     {
         // It's plain cute how this is the inverse of encode_symbol, code by code.
 
         // format of states array
-        // symbol     -> 0..8 bits
-        // num_bits   -> 8..16 bits.
+        // symbol     -> 00..08 bits
+        // num_bits   -> 08..16 bits.
         // next_state -> 16..32 bits.
+        // mask       -> 32..64 bits
 
         // It's not faster to use get_unchecked(well on Mac OS), the ' & (TABLE_SIZE-1)'
         // kinda does the same thing
         let next_state = states[(*state & (TABLE_SIZE - 1) as u16) as usize];
 
+        let mask = next_state >> 32;
         // extract symbol
         *dest = (next_state & 0xFF) as u8;
-
         // number of bits
         let num_bits = ((next_state >> 8) & 0xFF) as u8;
 
-        let low_bits = self.get_bits(num_bits);
+        let low_bits = (self.buffer & mask) as u16;
 
+        self.drop_bits(num_bits);
         // Determine next state from decoder's perspective
         // (previous state from encoder's perspective)
-        *state = ((next_state >> 16) as u16) + low_bits;
+        *state = (((next_state >> 16) & 0xFF_FF) as u16) + low_bits;
     }
 
     ///Initialize last states
