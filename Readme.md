@@ -20,7 +20,7 @@ Table Based Asymmetric Numerical systems stem from Jarek Duda's ANS and Yann Col
 It features better compression ratio(Closer to the Shannon Limit) as compared to Huffman, and it really shines with 
 skewed distributions.
 
-It does have an asymptomatically slower speeds thaKn Huffman as it does more per symbol work than Huffman, 
+It does have an asymptomatically slower speeds than Huffman as it does more work per symbol than a Huffman Encoder/Decoder, 
 this is visible in really aggressive out-of-order machines(see benchmarks) but is still a good replacement for it.
 
 
