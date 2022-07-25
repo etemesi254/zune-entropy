@@ -9,13 +9,13 @@ use std::io::Write;
 use log::Level::Trace;
 use log::{debug, log_enabled, trace};
 
-use crate::constants::{state_generator, MAX_TABLE_LOG, MIN_TABLE_LOG, TABLE_LOG, TABLE_SIZE};
+use crate::constants::{
+    state_generator, CHUNK_SIZE, EXTRA, MAX_TABLE_LOG, MIN_TABLE_LOG, TABLE_LOG, TABLE_SIZE,
+};
 use crate::errors::EntropyErrors;
 use crate::fse_bitstream::FseStreamWriter;
 use crate::huff_bitstream::BitStreamWriter;
 use crate::utils::{histogram, write_rle, write_uncompressed, Symbols};
-
-const CHUNK_SIZE: usize = 1 << 17;
 
 const SIZE: usize = 25;
 
@@ -70,8 +70,7 @@ fn normalize_frequencies_fast(
         sym[255].y += (tbl_size) as u16 - summed_bits;
 
         summed_bits += (tbl_size) as u16 - summed_bits;
-    }
-    else if (summed_bits as usize) > tbl_size
+    } else if (summed_bits as usize) > tbl_size
     {
         /* do some hacky heuristic's
          * It isn't the best heuristic but it produces better output than a naive heuristic.
@@ -249,6 +248,7 @@ fn generate_state_bits(freq_counts: &mut [Symbols; 256], non_zero: usize, table_
     // compressibility contains the theoretical bits that will be used to represent the symbols
     compressibility
 }
+
 /// Generate a pseudo state which we will use to spread symbols
 ///
 ///
@@ -331,10 +331,14 @@ fn spread_symbols(
         }
     }
 
+
     // Cumulative count should be equal to table size
     if c_count as usize != table_size
     {
-        return Err(EntropyErrors::CorruptHeader("Cumulative count is not equal to table size, error".to_string()));
+        return Err(EntropyErrors::CorruptHeader(format!(
+            "Cumulative count is not equal to table size, error. Cumulative count:{},table_size:{}",
+            c_count, table_size
+        )));
     }
     if state != INITIAL_STATE
     {
@@ -366,6 +370,7 @@ fn spread_symbols(
     }
     Ok((next_state, next_state_offset))
 }
+
 /// Write headers, packing symbols and their state counts
 /// into a bitstream format
 ///
@@ -381,7 +386,7 @@ fn write_headers<W: Write>(
     /*
      * Okay we have a header problem
      * what do we need to re-construct next_state?
-     *
+     *256
      * Well we need to know how many slots each symbol was given
      * and what symbol it was
      * So what to do?
@@ -415,11 +420,13 @@ fn write_headers<W: Write>(
     let mut output = vec![0_u8; (255 - non_zero) * 4];
 
     let mut stream = BitStreamWriter::new(&mut output);
+    let state_sym = symbols[non_zero..]
+        .iter()
+        .max_by(|a, b| a.y.cmp(&b.y))
+        .unwrap();
 
-    // this won't go Past 11 bits
-    // there is a theoretical bug,
-    // TODO:Fix that theoretical bug.
-    let state_bits = (u16::BITS - symbols[255].y.leading_zeros()) as u8;
+    // this won't go Past 10 bits
+    let state_bits = (u16::BITS - state_sym.y.leading_zeros()) as u8;
 
     assert!(state_bits <= 11);
 
@@ -479,20 +486,22 @@ fn write_headers<W: Write>(
     dest.write_all(&header_size.to_le_bytes()[0..2])?;
 
     // write number of symbols
-    dest.write_all(&[255 - (non_zero - 1) as u8])?;
+    dest.write_all(&[(256 - non_zero) as u8])?;
 
     dest.write_all(stream.get_output())?;
 
     Ok(())
 }
+
 /// Calculate the maximum state log bits
 /// to use for this block
 fn max_log(src_size: usize) -> usize
 {
     let high_bits = (usize::BITS - (src_size - 1).leading_zeros()) - 2;
 
-    max(min(MAX_TABLE_LOG, high_bits as usize), MIN_TABLE_LOG)
+    max(min(TABLE_LOG, high_bits as usize), MIN_TABLE_LOG)
 }
+
 #[inline(always)]
 fn encode_symbols_fallback<W: Write>(
     src: &[u8], common_symbol: i16, symbols: &mut [Symbols; 256], table_size: usize,
@@ -520,7 +529,6 @@ fn encode_symbols_fallback<W: Write>(
      * Fill it with the most common symbol, we can do with additional symbols
      * and it allows for a clean decoder loop.
      */
-
     // place next_state inside symbol definition
     let mut pos = 0;
     let symbols = &symbols.map(|mut x| {
@@ -626,19 +634,18 @@ fn encode_symbols_fallback<W: Write>(
 }
 
 #[inline(always)]
-
 #[rustfmt::skip]
 fn encode_symbols<W: Write>(
     src: &[u8], common_symbol: i16, symbols: &mut [Symbols; 256], table_size: usize,
     next_states: &[u16; TABLE_SIZE], next_states_offset: &[i32; 256], buf: &mut [u8], dest: &mut W,
-)->Result<(),EntropyErrors>
+) -> Result<(), EntropyErrors>
 {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         if is_x86_feature_detected!("bmi2")
         {
             return unsafe {
-                    encode_symbols_bmi(
+                encode_symbols_bmi(
                     src, common_symbol,
                     symbols, table_size, next_states,
                     next_states_offset,
@@ -647,7 +654,7 @@ fn encode_symbols<W: Write>(
             };
         }
     }
-        encode_symbols_fallback(
+    encode_symbols_fallback(
         src, common_symbol,
         symbols, table_size,
         next_states, next_states_offset,
@@ -660,7 +667,7 @@ fn encode_symbols<W: Write>(
 unsafe fn encode_symbols_bmi<W: Write>(
     src: &[u8], common_symbol: i16, symbols: &mut [Symbols; 256], table_size: usize,
     next_states: &[u16; TABLE_SIZE], next_states_offset: &[i32; 256], buf: &mut [u8], dest: &mut W,
-)->Result<(),EntropyErrors>
+) -> Result<(), EntropyErrors>
 {
     encode_symbols_fallback(
         src,
@@ -673,7 +680,8 @@ unsafe fn encode_symbols_bmi<W: Write>(
         dest,
     )
 }
-pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W) -> Result<(), EntropyErrors>
+
+pub fn fse_compress(src: &[u8], dest: &mut Vec<u8>) -> Result<(), EntropyErrors>
 {
     /*
      * FSE compression, as usual, the steps
@@ -703,6 +711,8 @@ pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W) -> Result<(), EntropyErr
     // asserts-> all are static
 
     assert!(TABLE_LOG <= MAX_TABLE_LOG);
+    assert!(!src.is_empty(), "Oo oo");
+
     // A lot of invariants won't work if this isn't obeyed
     assert!(TABLE_SIZE.is_power_of_two());
 
@@ -715,7 +725,7 @@ pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W) -> Result<(), EntropyErr
 
     let mut src_chunk = &src[start..end];
 
-    let mut buf = vec![0; CHUNK_SIZE + 10];
+    let mut buf = vec![0; CHUNK_SIZE + EXTRA];
 
     while !is_last
     {
@@ -734,6 +744,7 @@ pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W) -> Result<(), EntropyErr
         let mut freq_counts = histogram(src_chunk);
         // sort by occurrences
         freq_counts.sort_unstable_by(|a, b| a.x.cmp(&b.x));
+
         if freq_counts[255].x == src_chunk.len() as u32
         {
             // rle block
@@ -755,6 +766,7 @@ pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W) -> Result<(), EntropyErr
         let non_zero = freq_counts.iter().position(|x| x.x != 0).unwrap_or(0);
 
         // normalize frequencies.
+
         normalize_frequencies_fast(&mut freq_counts, tbl_size, non_zero, src_chunk.len());
 
         // Generate actual bit codes for the states for symbols.
@@ -772,9 +784,7 @@ pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W) -> Result<(), EntropyErr
             debug!("Emitting block as uncompressed");
 
             write_uncompressed(src_chunk, dest, is_last);
-        }
-        else
-        {
+        } else {
             let mut new_counts = [Symbols::default(); 256];
 
             // undo the sorting the earlier one did
@@ -793,6 +803,7 @@ pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W) -> Result<(), EntropyErr
             )?;
 
             let common_symbol = freq_counts[255].z;
+            // dbg!(common_symbol);
             // spread symbols, generating next_state also
             // spread symbols requires symbols arranged in alphabetical order
             // to generate cumulative frequency
@@ -818,4 +829,31 @@ pub fn fse_compress<W: Write>(src: &[u8], dest: &mut W) -> Result<(), EntropyErr
         src_chunk = &src[start..end];
     }
     Ok(())
+}
+
+
+#[allow(unused_imports)]
+mod tests
+{
+    use std::fs::read;
+    use std::io::Cursor;
+    use crate::{fse_compress, fse_decompress};
+
+
+    #[test]
+    fn fe()
+    {
+        let buf = &read("/home/caleb/Projects/Data/silesia/reymont").unwrap()[0..1 << 17];
+
+        let mut v = Vec::with_capacity(1100);
+        fse_compress(buf, &mut v).unwrap();
+        let mut x = vec![];
+        fse_decompress(&v, &mut x).unwrap();
+
+        x.iter().zip(v.iter()).enumerate().for_each(|(a, (b, c))| {
+            if b != c {
+                panic!("{}={},{}", a, b, c);
+            }
+        })
+    }
 }
