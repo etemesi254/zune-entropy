@@ -5,7 +5,7 @@ pub const LIMIT: usize = 11;
 pub const SMALL_CHUNK_SIZE: usize = 20;
 
 /// Recommended table  size
-pub const TABLE_LOG: usize = 11;
+pub const TABLE_LOG: usize = 10;
 /// Maximum size of table.
 /// If the table goes above this, some invariants in encoding and decoding won't work
 pub const MAX_TABLE_LOG: usize = 11;
@@ -16,7 +16,7 @@ pub const MIN_TABLE_LOG: usize = 5;
 // investigate why
 pub const CHUNK_SIZE: usize = 1 << 17;
 
-pub const EXTRA:usize = 1<<16;
+pub const EXTRA: usize = 1 << 16;
 
 pub fn state_generator(num_states: usize) -> usize
 {
