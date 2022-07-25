@@ -67,7 +67,6 @@ impl<'dest> FseStreamWriter<'dest>
     {
         // check that adding the value won't corrupt top bits
         // indicating value wasn't masked
-        debug_assert!((u32::from(nbits)) <= value.leading_zeros());
         // Don't read more bits than what a u16 can hold.
         debug_assert!(nbits <= 16);
 
@@ -125,7 +124,7 @@ impl<'dest> FseStreamWriter<'dest>
     /// and work its way to the initial state
     ///
     /// # Arguments
-    /// - `c1`..`c5` : Final state variables for the 5 stream tANS encoder.
+    /// - `c1`..`c5` : Final state variables for the 5 stream `tANS` encoder.
     ///
     /// - `table_size` : 2^n where `n` is the number of bits to be used to encode a single
     /// state
@@ -201,7 +200,7 @@ impl<'dest> FseStreamWriter<'dest>
         // debug build only
         debug_assert!(self.position > 8);
         // align bits to the top of the  buffer
-        let buf = (self.buf << (64 - self.bits)).to_le_bytes();
+        let buf = (self.buf << ((64 - self.bits) & 63)).to_le_bytes();
         // write 8 bytes
         self.dest
             .as_mut_ptr()
