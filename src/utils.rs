@@ -1,6 +1,6 @@
 //! Small function utilities for compression and decompression
 
-use std::io::{Write};
+use std::io::Write;
 
 use crate::huff_decompress::LIMIT;
 
