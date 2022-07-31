@@ -5,7 +5,7 @@ a Table Based Asymmetric numerical system.
 Both of these are compression algorithms that work by using less bits to represent frequently occurring 
 characters and more bits to represent less frequently occurring characters.
 
-The library is very much in beta  and some files may not work(siliesa/mozilla)
+The library is very much in beta  and some files may not work(like `siliesa/mozilla`)
 
 ### Huffman 
 
@@ -50,7 +50,7 @@ and to also point out a few gotchas.
 | File        | Library   | Encoder      | Decoder      | Compression ratio |
 |-------------|-----------|--------------|--------------|-------------------|
 | **enwiki8** |
-|             | Huffman   | 940.97 MB/s  | 1310.28 MB/s | 65.60%            |
+|             | Huffman   | 940.97 MB/s  | 1310.28 MB/s | 65.00%            |
 |             | TANS      | 602.56 MB/s  | 1022.93 MB/s | 63.90%            |
 ||
 |             | FSE/Huff0 | 924.6 MB/s   | 1049.5 MB/s  | 63.26%            |
