@@ -1,10 +1,9 @@
 //! This module provides huffman encoding and decoding routines
 
-
-
 pub use crate::constants::LIMIT;
 use crate::errors::EntropyErrors;
 use crate::huff_bitstream::BitStreamReader;
+use crate::unsafe_utils::extend;
 use crate::utils::{read_rle, read_uncompressed, REVERSED_BITS};
 
 pub fn build_tree(
@@ -303,7 +302,9 @@ fn decode_symbols_fallback(
         | !stream4.check_final()
         | !stream5.check_final()
     {
-        return Err(EntropyErrors::CorruptStream("A stream  was possibly corrupted, integrity of data is compromised".to_string()));
+        return Err(EntropyErrors::CorruptStream(
+            "A stream  was possibly corrupted, integrity of data is compromised".to_string(),
+        ));
     }
     //everything is good, we won Mr Stark.
     Ok(())
@@ -315,13 +316,12 @@ fn decode_symbols_fallback(
 /// is done , dest.len() will contain uncompressed data
 pub fn huff_decompress(src: &[u8], dest: &mut Vec<u8>) -> Result<(), EntropyErrors>
 {
-    let mut block_length ;
-    let mut symbols:&[u8];
+    let mut block_length;
+    let mut symbols: &[u8];
     let mut jump_table: &[u8; 10];
 
     let mut tbl = [0; 1 << LIMIT];
-    let mut code_lengths :[u8; 12] = [0;12];
-
+    let mut code_lengths: [u8; 12] = [0; 12];
 
     // current position from where we are reading src_buf from.
     let mut src_position = 4;
@@ -347,13 +347,13 @@ pub fn huff_decompress(src: &[u8], dest: &mut Vec<u8>) -> Result<(), EntropyErro
         if (block_info >> 6) == 0b10
         {
             read_uncompressed(src, block_length, dest);
-            src_position+=block_length as usize;
+            src_position += block_length as usize;
         }
         else if (block_info >> 6) == 0b01
         {
             // RLE block
             read_rle(src, block_length, dest);
-            src_position+=1;
+            src_position += 1;
         }
         else if (block_info >> 6) == 0b11
         {
@@ -366,7 +366,7 @@ pub fn huff_decompress(src: &[u8], dest: &mut Vec<u8>) -> Result<(), EntropyErro
 
             // read jump table
             jump_table = src[src_position..src_position + 10].try_into().unwrap();
-            src_position+=10;
+            src_position += 10;
             //src.read_exact(&mut jump_table)?;
 
             // two bytes per jump table, stored in little endian form.
@@ -384,8 +384,8 @@ pub fn huff_decompress(src: &[u8], dest: &mut Vec<u8>) -> Result<(), EntropyErro
             let offsets = [tbl1, tbl2, tbl3, tbl4, end];
 
             // read code lengths
-            code_lengths[1..].copy_from_slice(&src[src_position..src_position+11]);
-            src_position+=11;
+            code_lengths[1..].copy_from_slice(&src[src_position..src_position + 11]);
+            src_position += 11;
             //src.read_exact(&mut code_lengths[1..])?;
 
             let codes = code_lengths.iter().map(|x| *x as usize).sum::<usize>();
@@ -396,37 +396,20 @@ pub fn huff_decompress(src: &[u8], dest: &mut Vec<u8>) -> Result<(), EntropyErro
                 ));
             }
             // read symbols
-            symbols = &src[src_position..src_position+codes];
-            src_position+=codes;
+            symbols = &src[src_position..src_position + codes];
+            src_position += codes;
 
             // Build the Huffman tree
             build_tree(&mut tbl, &code_lengths, symbols)?;
 
-            let huff_source =  &src[src_position..src_position+end];
-            src_position+=end;
+            let huff_source = &src[src_position..src_position + end];
+            src_position += end;
             // new length
             let start = dest.len();
 
             let new_len = dest.len() + block_length as usize;
-            // set length to be the capacity
-            if new_len > dest.capacity()
-            {
-                let cap = dest.capacity();
-                dest.reserve(new_len - cap);
-            }
-            // Don't continue if we don't have capacity to create a new write
-            assert!(
-                new_len <= dest.capacity(),
-                "{},{}",
-                new_len,
-                dest.capacity()
-            );
-
-            // this is the laziest way to use uninitialized memory
-            // 1. We know decompress_huff_inner will write to the whole
-            // uninitialized region. (there is an assert up there to ensure it is)
-            // 2. The assert above ensures the new len is inside the capacity of the vector.
-            unsafe { dest.set_len(new_len) };
+            // UNSAFE
+            extend(dest,new_len);
 
             decode_symbols(
                 huff_source,
@@ -446,12 +429,11 @@ pub fn huff_decompress(src: &[u8], dest: &mut Vec<u8>) -> Result<(), EntropyErro
         }
         // not last block, pull in more bytes.
         block_info = src[src_position];
-        src_position+=1;
+        src_position += 1;
 
         // read the length for the next iteration
-        length[0..3].copy_from_slice(&src[src_position..src_position+3]);
-        src_position+=3;
-        //src.read_exact(&mut length[0..3])?;
+        length[0..3].copy_from_slice(&src[src_position..src_position + 3]);
+        src_position += 3;
     }
     Ok(())
 }
