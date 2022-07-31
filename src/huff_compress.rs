@@ -7,8 +7,7 @@ use std::cmp::min;
 use std::convert::TryInto;
 use std::io::Write;
 
-use log::Level::Trace;
-use log::{debug, log_enabled, trace};
+use log::{trace};
 
 use crate::constants::{CHUNK_SIZE, EXTRA, LIMIT, SMALL_CHUNK_SIZE};
 use crate::errors::EntropyErrors;
@@ -67,6 +66,7 @@ fn fast_log2(x: f32) -> f32
 
     y - 124.225_52 - 1.498_030_3 * mx_f - 1.725_88 / (0.352_088_72 + mx_f)
 }
+
 #[allow(clippy::mut_range_bound, clippy::cast_sign_loss)]
 fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
 {
@@ -81,7 +81,7 @@ fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
      *
      *
      */
-    const INITIAL_THRESHOLD: f32 = 0.4375; // (28/64)
+    const INITIAL_THRESHOLD: f32 = 0.4875; // (28/64)
 
     const STEP_THRESHOLD: f32 = 0.015_625; // (1/64)
 
@@ -164,8 +164,7 @@ fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
                     // detect if we are already done.
                     break;
                 }
-            }
-            else if diff > threshold - step_threshold && offset == 0
+            } else if diff > threshold - step_threshold && offset == 0
             {
                 // `i` will point to the next subsequent
                 // iteration where the code length is
@@ -209,6 +208,7 @@ fn limited_kraft(histogram: &mut [Symbols; 256], hist_sum: u32)
 
     histogram.sort_unstable_by(|a, b| a.y.cmp(&b.y));
 }
+
 fn generate_codes(symbols: &mut [Symbols; 256], non_zero: usize) -> [u8; LIMIT]
 {
     /*
@@ -258,54 +258,53 @@ fn generate_codes(symbols: &mut [Symbols; 256], non_zero: usize) -> [u8; LIMIT]
 
 /// Encode symbols for the Huffman Stream
 #[rustfmt::skip]
-fn encode_symbols<W: Write>(
-    buf: &mut [u8], src_chunk: &[u8], entries: &[u32; 256], dest: &mut W, info_bit: u8,
+fn encode_symbols(
+    buf: &mut [u8], src_chunk: &[u8], entries: &[u32; 256], dest: &mut Vec<u8>, info_bit: u8,
     freq_counts: &mut [Symbols; 256], non_zero: usize, code_lengths: [u8; 11], last_sym: Symbols,
-)->Result<(),EntropyErrors>
+) -> Result<(), EntropyErrors>
 {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         if is_x86_feature_detected!("bmi2")
         {
             return unsafe {
-                    encode_symbols_bmi2(
-                        buf, src_chunk,
-                        entries, dest,
-                        info_bit, freq_counts,
-                        non_zero, code_lengths,
-                        last_sym,
-                    )
+                encode_symbols_bmi2(
+                    buf, src_chunk,
+                    entries, dest,
+                    info_bit, freq_counts,
+                    non_zero, code_lengths,
+                    last_sym,
+                )
             };
         }
     }
-        encode_symbols_fallback(buf,src_chunk,entries
-                                ,dest,info_bit,
-                                freq_counts,non_zero,
-                                code_lengths,last_sym)
+    encode_symbols_fallback(buf, src_chunk, entries
+                            , dest, info_bit,
+                            freq_counts, non_zero,
+                            code_lengths, last_sym)
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "bmi2")]
 #[rustfmt::skip]
-
-unsafe fn encode_symbols_bmi2<W: Write>(
-    buf: &mut [u8], src_chunk: &[u8], entries: &[u32; 256], dest: &mut W, info_bit: u8,
+unsafe fn encode_symbols_bmi2(
+    buf: &mut [u8], src_chunk: &[u8], entries: &[u32; 256], dest: &mut Vec<u8>, info_bit: u8,
     freq_counts: &mut [Symbols; 256], non_zero: usize, code_lengths: [u8; 11], last_sym: Symbols,
-)->Result<(),EntropyErrors>
+) -> Result<(), EntropyErrors>
 {
-        encode_symbols_fallback(
-            buf, src_chunk,
-            entries, dest,
-            info_bit, freq_counts,
-            non_zero, code_lengths,
-            last_sym,
-        )
+    encode_symbols_fallback(
+        buf, src_chunk,
+        entries, dest,
+        info_bit, freq_counts,
+        non_zero, code_lengths,
+        last_sym,
+    )
 }
 
 /// Encode symbols for the Huffman Stream
 #[inline(always)]
-fn encode_symbols_fallback<W: Write>(
-    buf: &mut [u8], src_chunk: &[u8], entries: &[u32; 256], dest: &mut W, info_bit: u8,
+fn encode_symbols_fallback(
+    buf: &mut [u8], src_chunk: &[u8], entries: &[u32; 256], dest: &mut Vec<u8>, info_bit: u8,
     freq_counts: &mut [Symbols; 256], non_zero: usize, code_lengths: [u8; 11], last_sym: Symbols,
 ) -> Result<(), EntropyErrors>
 {
@@ -403,44 +402,44 @@ fn encode_symbols_fallback<W: Write>(
         stream5.flush_final();
     }
     // write headers
+
+    dest.write_all(&[info_bit])?;
+    // total block size, in little endian
+    dest.write_all(&src_chunk.len().to_le_bytes()[0..3])?;
+
+    // add jump tables ->10 bytes
+    dest.write_all(&stream1.get_position().to_le_bytes()[0..2])?;
+
+    dest.write_all(&stream2.get_position().to_le_bytes()[0..2])?;
+
+    dest.write_all(&stream3.get_position().to_le_bytes()[0..2])?;
+
+    dest.write_all(&stream4.get_position().to_le_bytes()[0..2])?;
+
+    dest.write_all(&stream5.get_position().to_le_bytes()[0..2])?;
+    // code lengths
+    dest.write_all(&code_lengths)?;
+
+    // sort again  by codes this time.
+    freq_counts.sort_unstable_by(|a, b| a.x.cmp(&b.x));
+
+    let sum = code_lengths.iter().map(|x| *x as usize).sum::<usize>();
+
+    trace!("Total symbols:{}", sum);
+    // insert the last symbol, it was assigned a code length of 0000 hence the sort messed it up
+    freq_counts[non_zero] = last_sym;
+
+    // so now we have a bunch of non-zeroes, we know how many they were since we have a variable
+    // pointing to the start of it
+    let mut symbols = [0; 256];
+
+    for (sym, pos) in freq_counts[non_zero..].iter().zip(symbols.iter_mut())
     {
-        dest.write_all(&[info_bit])?;
-        // total block size, in little endian
-        dest.write_all(&src_chunk.len().to_le_bytes()[0..3])?;
-
-        // add jump tables ->10 bytes
-        dest.write_all(&stream1.get_position().to_le_bytes()[0..2])?;
-
-        dest.write_all(&stream2.get_position().to_le_bytes()[0..2])?;
-
-        dest.write_all(&stream3.get_position().to_le_bytes()[0..2])?;
-
-        dest.write_all(&stream4.get_position().to_le_bytes()[0..2])?;
-
-        dest.write_all(&stream5.get_position().to_le_bytes()[0..2])?;
-        // code lengths
-        dest.write_all(&code_lengths)?;
-
-        // sort again  by codes this time.
-        freq_counts.sort_unstable_by(|a, b| a.x.cmp(&b.x));
-
-        let sum = code_lengths.iter().map(|x| *x as usize).sum::<usize>();
-
-        debug!("Total symbols:{}", sum);
-        // insert the last symbol, it was assigned a code length of 0000 hence the sort messed it up
-        freq_counts[non_zero] = last_sym;
-
-        // so now we have a bunch of non-zeroes, we know how many they were since we have a variable
-        // pointing to the start of it
-        let mut symbols = [0; 256];
-
-        for (sym, pos) in freq_counts[non_zero..].iter().zip(symbols.iter_mut())
-        {
-            *pos = (sym.z & 255) as u8;
-        }
-        // write symbols
-        dest.write_all(&symbols[0..sum])?;
+        *pos = (sym.z & 255) as u8;
     }
+    // write symbols
+    dest.write_all(&symbols[0..sum])?;
+
 
     // write data
     // These serve two purpose
@@ -449,6 +448,7 @@ fn encode_symbols_fallback<W: Write>(
     //      -> The encode_symbols may write to the next stream position(since we use one large vector
     //          and subdivide it into smaller chunks) stream 1 may overwrite to stream2
     //          position which corrupts stream 2 data.
+    let prev_length = dest.len();
     dest.write_all(stream1.get_output())?;
 
     dest.write_all(stream2.get_output())?;
@@ -459,11 +459,22 @@ fn encode_symbols_fallback<W: Write>(
 
     dest.write_all(stream5.get_output())?;
 
+    let after = dest.len();
+
+    let header_size = sum + 10 /*Jump table*/ + 11 /* code lengths */ + 1 /*info bit*/ + 3 /*Length bit*/;
+
+    let new_length = after - prev_length + header_size;
+    trace!("Header size : {} bytes",header_size);
+    trace!("Compressed {} bytes to {} bytes",src_chunk.len(), new_length);
+    trace!("Ratio: {:.4}",after as f64 /src_chunk.len() as f64);
+
+
     Ok(())
 }
+
 /// Compress a buffer `src` and store it into
 /// buffer `dest`
-pub fn huff_compress<W: Write>(src: &[u8], dest: &mut W) -> Result<(), EntropyErrors>
+pub fn huff_compress(src: &[u8], dest: &mut Vec<u8>) -> Result<(), EntropyErrors>
 {
     /*
      * Main code for compression.
@@ -557,27 +568,17 @@ pub fn huff_compress<W: Write>(src: &[u8], dest: &mut W) -> Result<(), EntropyEr
                 info_bit[0] |= 1 << 5;
             }
 
-            if log_enabled!(Trace)
+            if compressed_ratio.saturating_sub( 4096) > (src_chunk.len() as u32 * (u8::BITS))
             {
-                trace!("Compressed size : {}", compressed_ratio);
-                trace!(
-                    "Ratio : {}",
-                    compressed_ratio as f32 / src_chunk.len() as f32
-                );
-            }
-            if compressed_ratio - 4096 > (src_chunk.len() as u32 * (u8::BITS))
-            {
-                debug!("Emitting block as uncompressed\n");
+                trace!("Theoretical compressed bits : {} , uncompressed bits: {}",compressed_ratio,src_chunk.len()*8);
+                trace!("Emitting block as uncompressed\n");
                 // emit as uncompressed
                 write_uncompressed(src_chunk, dest, is_last);
-            }
-            else if last_sym.x == src_chunk.len() as u32
+            } else if last_sym.x == src_chunk.len() as u32
             {
-                debug!("Emitting block as RLE\n");
+                trace!("Emitting block as RLE\n");
                 write_rle(src_chunk, dest, is_last);
-            }
-            else
-            {
+            } else {
                 // generate actual codes
                 // codes run from 1..=11 inclusive, e.g if a code length has been given 10 bits, it will be at
                 // position 9.
@@ -604,28 +605,4 @@ pub fn huff_compress<W: Write>(src: &[u8], dest: &mut W) -> Result<(), EntropyEr
     }
     // Everything is okay
     Ok(())
-}
-
-#[test]
-fn huff_compress_test()
-{
-    use std::fs::OpenOptions;
-    use std::io::BufWriter;
-
-    let fs = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open("/Users/calebe/CLionProjects/zcif/tests.zcif")
-        .unwrap();
-    let mut fs = BufWriter::with_capacity(1 << 24, fs);
-
-    let fd = vec![221; 10000];
-
-    huff_compress(&fd, &mut fs);
-    println!(
-        "{:?} {:?}",
-        fs.get_ref().metadata().unwrap().len() as f64,
-        fd.len() as f64
-    );
 }
