@@ -7,7 +7,7 @@ use std::cmp::{max, min};
 use std::io::Write;
 
 use log::Level::Trace;
-use log::{debug, log_enabled, trace};
+use log::{log_enabled, trace};
 
 use crate::constants::{
     state_generator, CHUNK_SIZE, EXTRA, MAX_TABLE_LOG, MIN_TABLE_LOG, TABLE_LOG, TABLE_SIZE,
@@ -105,7 +105,7 @@ fn normalize_frequencies_fast(
 
         loop
         {
-            if first.y == 1
+            if first.y >=1
             {
                 // Don't nuke a symbol with 1 slot, go start at the top.
 
@@ -118,7 +118,7 @@ fn normalize_frequencies_fast(
             }
 
             // ensure that this operation at least reduces a slot(the +1)
-            let v = min(((first.y - second.y) / THRESH0LD) + 1, excess_states);
+            let v = min((first.y.saturating_sub( second.y)) / THRESH0LD, excess_states);
 
             excess_states -= v;
 
@@ -417,7 +417,7 @@ fn write_headers<W: Write>(
     // each symbol + state occupies up to 18 bits.
     // so output == (symbol * 2 bytes)+2 bits for each symbol.
     // So overallocate
-    let mut output = vec![0_u8; (255 - non_zero) * 4];
+    let mut output = vec![0_u8; (260 - non_zero) * 4];
 
     let mut stream = BitStreamWriter::new(&mut output);
     let state_sym = symbols[non_zero..]
@@ -497,7 +497,7 @@ fn write_headers<W: Write>(
 /// to use for this block
 fn max_log(src_size: usize) -> usize
 {
-    let high_bits = (usize::BITS - (src_size - 1).leading_zeros()) - 2;
+    let high_bits = usize::BITS - (src_size - 1).leading_zeros();
 
     max(min(TABLE_LOG, high_bits as usize), MIN_TABLE_LOG)
 }
@@ -613,7 +613,6 @@ fn encode_symbols_fallback<W: Write>(
     // we need to write the final state values
 
     stream.encode_final_states(c1, c2, c3, c4, c5, table_size);
-
     // write size of this block
     dest.write_all(&stream.get_position().to_le_bytes()[0..3])?;
 
@@ -748,7 +747,7 @@ pub fn fse_compress(src: &[u8], dest: &mut Vec<u8>) -> Result<(), EntropyErrors>
         if freq_counts[255].x == src_chunk.len() as u32
         {
             // rle block
-            debug!("Encountered RLE block, emitting as RLE");
+            trace!("Encountered RLE block, emitting as RLE");
 
             write_rle(src_chunk, dest, is_last);
 
@@ -776,12 +775,12 @@ pub fn fse_compress(src: &[u8], dest: &mut Vec<u8>) -> Result<(), EntropyErrors>
 
         if compressibility + THRESH0LD > (src_chunk.len() as u32 * u8::BITS)
         {
-            debug!("Block size:{}", src_chunk.len());
-            debug!(
+            trace!("Block size:{}", src_chunk.len());
+            trace!(
                 "Theoretical compression ratio:{}",
                 compressibility as f32 / src_chunk.len() as f32
             );
-            debug!("Emitting block as uncompressed");
+            trace!("Emitting block as uncompressed");
 
             write_uncompressed(src_chunk, dest, is_last);
         } else {
@@ -843,16 +842,16 @@ mod tests
     #[test]
     fn fe()
     {
-        let buf = &read("/home/caleb/Projects/Data/silesia/reymont").unwrap()[0..1 << 17];
+        let buf = &read("/home/caleb/Projects/Data/silesia/mozilla").unwrap()[0..130000];
 
         let mut v = Vec::with_capacity(1100);
         fse_compress(buf, &mut v).unwrap();
         let mut x = vec![];
         fse_decompress(&v, &mut x).unwrap();
 
-        x.iter().zip(v.iter()).enumerate().for_each(|(a, (b, c))| {
+        x.iter().zip(buf.iter()).enumerate().for_each(|(a, (b, c))| {
             if b != c {
-                panic!("{}={},{}", a, b, c);
+               panic!("{}={},{}", a, b, c);
             }
         })
     }
