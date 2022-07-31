@@ -24,6 +24,7 @@ mod fse_decompress;
 mod huff_decompress;
 
 mod utils;
+mod unsafe_utils;
 
 pub use fse_compress::fse_compress;
 pub use fse_decompress::fse_decompress;
