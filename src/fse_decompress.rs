@@ -2,6 +2,7 @@ use crate::constants::{state_generator, TABLE_SIZE};
 use crate::errors::EntropyErrors;
 use crate::fse_bitstream::FSEStreamReader;
 use crate::huff_bitstream::BitStreamReader;
+use crate::unsafe_utils::extend;
 use crate::utils::{read_rle, read_uncompressed, Symbols};
 
 fn spread_symbols(
@@ -52,6 +53,7 @@ fn spread_symbols(
         while count > 0
         {
             state_array[state].z = symbol;
+
             state_array[state].y = sym.y;
 
             state = (state + state_gen) & (tbl_size - 1);
@@ -274,8 +276,9 @@ fn read_headers(buf: &[u8], symbol_count: u8, state_bits: u8) -> [Symbols; 256]
     let mut symbols = [Symbols::default(); 256];
 
     let mut stream = BitStreamReader::new(buf);
+    let mut symbol_count = symbol_count;
 
-    for _ in 0..(symbol_count / 2)
+    while symbol_count >= 2
     {
         unsafe {
             stream.refill_fast();
@@ -297,9 +300,9 @@ fn read_headers(buf: &[u8], symbol_count: u8, state_bits: u8) -> [Symbols; 256]
             y: state,
             x: 0,
         };
+        symbol_count-=2;
     }
-
-    if (symbol_count & 1) != 0
+    if symbol_count != 0
     {
         // Do the last odd value
         unsafe {
@@ -404,24 +407,9 @@ pub fn fse_decompress(src: &[u8], dest: &mut Vec<u8>) -> Result<(), EntropyError
 
             let start = dest.len();
 
-            let new_len = dest.len() + block_length as usize + 5;
+            let new_len = dest.len() + block_length as usize;
 
-            unsafe { dest.set_len(dest.capacity()) };
-            // set length to be the capacity
-            if new_len > dest.capacity()
-            {
-                let cap = dest.capacity();
-                dest.reserve(new_len - cap);
-            }
-            unsafe { dest.set_len(new_len) };
-
-            // Don't continue if we don't have capacity to create a new write
-            assert!(
-                new_len <= dest.capacity(),
-                "{},{}",
-                new_len,
-                dest.capacity()
-            );
+            extend(dest,new_len);
 
             decode_symbols(
                 source,
@@ -429,11 +417,6 @@ pub fn fse_decompress(src: &[u8], dest: &mut Vec<u8>) -> Result<(), EntropyError
                 &mut dest[start..],
                 block_length as usize,
             )?;
-
-            // we had to add a +5 length to allow for unused symbols to
-            // be added to the state,
-            // so do not forget to remove them since they contain dummy values.
-            unsafe { dest.set_len(new_len - 5) };
         }
         // we reached the last block.
         if (block_info >> 5) & 1 == 1
