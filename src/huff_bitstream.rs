@@ -3,7 +3,7 @@
 //! This module provides an interface to read and write bits (and bytes) for
 //! huffman
 
-use crate::constants::{LIMIT, TABLE_SIZE};
+use crate::constants::{LIMIT};
 
 pub struct BitStreamReader<'src>
 {
@@ -70,7 +70,7 @@ impl<'src> BitStreamReader<'src>
     /// Decode a single symbol
     #[inline(always)]
     #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))] // bmi support
-    pub fn decode_single(&mut self, dest: &mut u8, table: &[u16; TABLE_SIZE])
+    pub fn decode_single(&mut self, dest: &mut u8, table: &[u16; 1<<LIMIT])
     {
         let entry = table[self.peek_bits::<LIMIT>()];
 
@@ -101,7 +101,7 @@ impl<'src> BitStreamReader<'src>
     }
 
     #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
-    pub fn decode_single(&mut self, dest: &mut u8, table: &[u16; TABLE_SIZE])
+    pub fn decode_single(&mut self, dest: &mut u8, table: &[u16; 1<<LIMIT])
     {
         /*
          * Generate better code for CPUs supporting BMI2,
@@ -121,7 +121,7 @@ impl<'src> BitStreamReader<'src>
 
             // keep values in register Rust.
             asm!(
-                // shrx instruction uses the lower 0-6 bits of the last(entry:r) register, that's why ther
+                // shrx instruction uses the lower 0-6 bits of the last(entry:r) register, that's why there
                 // is no explicit masking
                  "shrx {buf}, {buf}, {entry:r}", // self.buf >>= (entry & 0xFF);
                  "sub {bits_left},{entry:l}", // self.bits_left -= (entry & 0xFF);
@@ -286,6 +286,7 @@ impl<'dest> BitStreamWriter<'dest>
 
     pub fn get_position(&self) -> usize
     {
+        assert!(self.position < 65535);
         self.position
     }
     pub fn get_output(&self) -> &[u8]
