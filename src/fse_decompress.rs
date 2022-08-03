@@ -285,7 +285,6 @@ fn read_headers(buf: &[u8], symbol_count: u8, state_bits: u8) -> [Symbols; 256]
         }
         let symbol = stream.get_bits(8) as usize;
         let state = stream.get_bits(state_bits) as u16;
-        dbg!(state);
 
         symbols[symbol] = Symbols {
             z: symbol as i16,
