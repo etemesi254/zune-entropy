@@ -346,13 +346,13 @@ pub fn huff_decompress(src: &[u8], dest: &mut Vec<u8>) -> Result<(), EntropyErro
         // 0b10 uncompressed
         if (block_info >> 6) == 0b10
         {
-            read_uncompressed(src, block_length, dest);
+            read_uncompressed(&src[src_position..], block_length, dest);
             src_position += block_length as usize;
         }
         else if (block_info >> 6) == 0b01
         {
             // RLE block
-            read_rle(src, block_length, dest);
+            read_rle(&src[src_position..], block_length, dest);
             src_position += 1;
         }
         else if (block_info >> 6) == 0b11
