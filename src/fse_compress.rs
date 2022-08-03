@@ -830,29 +830,3 @@ pub fn fse_compress(src: &[u8], dest: &mut Vec<u8>) -> Result<(), EntropyErrors>
     Ok(())
 }
 
-
-#[allow(unused_imports)]
-mod tests
-{
-    use std::fs::read;
-    use std::io::Cursor;
-    use crate::{fse_compress, fse_decompress};
-
-
-    #[test]
-    fn fe()
-    {
-        let buf = &read("/home/caleb/Projects/Data/silesia/mozilla").unwrap()[0..130000];
-
-        let mut v = Vec::with_capacity(1100);
-        fse_compress(buf, &mut v).unwrap();
-        let mut x = vec![];
-        fse_decompress(&v, &mut x).unwrap();
-
-        x.iter().zip(buf.iter()).enumerate().for_each(|(a, (b, c))| {
-            if b != c {
-               panic!("{}={},{}", a, b, c);
-            }
-        })
-    }
-}
