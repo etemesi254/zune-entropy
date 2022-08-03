@@ -486,7 +486,7 @@ fn write_headers<W: Write>(
     dest.write_all(&header_size.to_le_bytes()[0..2])?;
 
     // write number of symbols
-    dest.write_all(&[(256 - non_zero) as u8])?;
+    dest.write_all(&[(255 - non_zero) as u8])?;
 
     dest.write_all(stream.get_output())?;
 
