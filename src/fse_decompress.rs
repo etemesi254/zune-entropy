@@ -285,6 +285,7 @@ fn read_headers(buf: &[u8], symbol_count: u8, state_bits: u8) -> [Symbols; 256]
         }
         let symbol = stream.get_bits(8) as usize;
         let state = stream.get_bits(state_bits) as u16;
+        dbg!(state);
 
         symbols[symbol] = Symbols {
             z: symbol as i16,
@@ -317,6 +318,20 @@ fn read_headers(buf: &[u8], symbol_count: u8, state_bits: u8) -> [Symbols; 256]
             x: 0,
         };
     }
+    // We store symbols - 1 to handle the case where
+    // symbols can be 256, since 256 cannot fit in a u8
+    // we prevent overflow, but we have to read an extra 1 symbol.
+    unsafe {
+        stream.refill_fast();
+    }
+    let symbol = stream.get_bits(8) as usize;
+    let state = stream.get_bits(state_bits) as u16;
+
+    symbols[symbol] = Symbols {
+        z: symbol as i16,
+        y: state,
+        x: 0,
+    };
 
     symbols
 }
