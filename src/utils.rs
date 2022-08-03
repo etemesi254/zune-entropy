@@ -174,23 +174,7 @@ pub fn read_uncompressed(src: &[u8], block_length: u32, dest: &mut Vec<u8>)
     // block was uncompressed
     // assert that the above reserve actually worked
     // read to the dest buffer
-    unsafe {
-        // a variation of vec::extend
-        let old_len = dest.len();
-        let new_len = old_len + block_length as usize;
-        // SAFETY:
-        //  1. New len must be equal to or less than capacity -> confirmed by the assert
-        //     statement
-        //  2. Elements between old_len-new_len must be initialized -> Done straight after
-        //     setting up the new length.
-        assert!(dest.capacity() >= new_len, "Internal error, report to repo");
-
-        dest.set_len(new_len);
-        // read_exact guarantees it will fill up buf, if it doesn't it will panic,
-        // hence the guarantees of the set len are met.
-        dest[old_len..new_len].copy_from_slice(&src[0..block_length as usize]);
-        //src.read_exact(&mut dest[old_len..new_len]).unwrap();
-    }
+    dest.extend_from_slice(&src[0..block_length as usize]);
 }
 
 pub fn read_rle(src: &[u8], block_length: u32, dest: &mut Vec<u8>)
